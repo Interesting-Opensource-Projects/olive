@@ -29,7 +29,6 @@
 #include <QDial>
 #include <QLabel>
 
-#include "widget/audiomonitor/audiomonitor.h"
 #include "widget/panel/panel.h"
 #include "trackpanel.h"
 

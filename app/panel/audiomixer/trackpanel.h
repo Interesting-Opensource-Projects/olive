@@ -30,7 +30,7 @@
 #include <QLabel>
 #include <QPalette>
 
-#include "widget/audiomonitor/audiomonitor.h"
+#include "widget/audiomixer/audiomixer.h"
 
 namespace olive {
 
@@ -55,7 +55,7 @@ class TrackPanel : public QWidget {
   QPushButton* btn_solo;
   QPushButton* btn_record;
 
-  AudioMonitor* audio_monitor_;
+  AudioMixer* audio_monitor_;
 
 };
 

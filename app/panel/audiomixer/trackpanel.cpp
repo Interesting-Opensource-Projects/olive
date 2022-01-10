@@ -78,7 +78,7 @@ TrackPanel::TrackPanel(QWidget* parent) : QWidget(parent) {
 
     slider_layout->addWidget(volume_slider);
 
-    audio_monitor_ = new AudioMonitor(this);
+    audio_monitor_ = new AudioMixer(this);
     audio_monitor_->setFixedWidth(7);
     slider_layout->addWidget(audio_monitor_);
 
