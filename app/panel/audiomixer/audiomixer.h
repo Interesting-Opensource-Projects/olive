@@ -32,6 +32,9 @@
 #include "widget/panel/panel.h"
 #include "trackpanel.h"
 
+// Get tracks track.h holds this data
+// track.h <- tracklist.h <- sequence.h <- ?
+
 namespace olive {
 
 /**
