@@ -43,11 +43,16 @@
 #include "dialog/autorecovery/autorecoverydialog.h"
 #include "dialog/export/export.h"
 #include "dialog/footagerelink/footagerelinkdialog.h"
+#ifdef USE_OTIO
+#include "dialog/otioproperties/otiopropertiesdialog.h"
+#endif
+#include "dialog/projectproperties/projectproperties.h"
 #include "dialog/sequence/sequence.h"
 #include "dialog/task/task.h"
 #include "dialog/preferences/preferences.h"
 #include "node/color/colormanager/colormanager.h"
 #include "node/factory.h"
+#include "node/project/serializer/serializer.h"
 #include "panel/panelmanager.h"
 #include "panel/project/project.h"
 #include "panel/viewer/viewer.h"
@@ -75,7 +80,6 @@
 namespace olive {
 
 Core* Core::instance_ = nullptr;
-const uint Core::kProjectVersion = 211228;
 
 Core::Core(const CoreParams& params) :
   main_window_(nullptr),
@@ -149,6 +153,9 @@ void Core::Start()
   // Initialize ConformManager
   ConformManager::CreateInstance();
 
+  // Initialize project serializers
+  ProjectSerializer::Initialize();
+
   //
   // Start application
   //
@@ -203,6 +210,8 @@ void Core::Stop()
       recent_projects_file.close();
     }
   }
+
+  ProjectSerializer::Destroy();
 
   ConformManager::DestroyInstance();
 
@@ -365,6 +374,21 @@ void Core::DialogPreferencesShow()
   pd.exec();
 }
 
+void Core::DialogProjectPropertiesShow()
+{
+  Project *proj = GetActiveProject();
+
+  if (proj) {
+    ProjectPropertiesDialog ppd(proj, main_window_);
+    ppd.exec();
+  } else {
+    QMessageBox::critical(main_window_,
+                          tr("No Active Project"),
+                          tr("No project is currently open to set the properties for"),
+                          QMessageBox::Ok);
+  }
+}
+
 void Core::DialogExportShow()
 {
   ViewerOutput* viewer = GetSequenceToExport();
@@ -375,6 +399,14 @@ void Core::DialogExportShow()
     ed->open();
   }
 }
+
+#ifdef USE_OTIO
+bool Core::DialogImportOTIOShow(const QList<Sequence*>& sequences) {
+  Project* active_project = GetActiveProject();
+  OTIOPropertiesDialog opd(sequences, active_project);
+  return opd.exec() == QDialog::Accepted;
+}
+#endif
 
 void Core::CreateNewFolder()
 {
@@ -481,11 +513,10 @@ bool Core::AddOpenProjectFromTask(Task *task)
 
   if (!load_task->IsCancelled()) {
     Project* project = load_task->GetLoadedProject();
-    MainWindowLayoutInfo layout = load_task->GetLoadedLayout();
 
-    if (ValidateFootageInLoadedProject(project, load_task->GetFilenameProjectWasSavedAs())) {
+    if (ValidateFootageInLoadedProject(project, project->GetSavedURL())) {
       AddOpenProject(project);
-      main_window_->LoadLayout(layout);
+      main_window_->LoadLayout(project->GetLayoutInfo());
 
       return true;
     } else {
@@ -743,6 +774,9 @@ void Core::SaveProjectInternal(Project* project, const QString& override_filenam
 {
   // Create save manager
   Task* psm;
+
+  // Put layout into project
+  project->SetLayoutInfo(main_window_->SaveLayout());
 
   if (project->filename().endsWith(QStringLiteral(".otio"), Qt::CaseInsensitive)) {
 #ifdef USE_OTIO

@@ -316,8 +316,6 @@ public:
 
   void OpenNodeInViewer(ViewerOutput* viewer);
 
-  static const uint kProjectVersion;
-
 public slots:
   /**
    * @brief Starts an open file dialog to load a project from file
@@ -394,9 +392,21 @@ public slots:
   void DialogPreferencesShow();
 
   /**
+   * @brief Show Project Properties dialog
+   */
+  void DialogProjectPropertiesShow();
+
+  /**
    * @brief Show Export dialog
    */
   void DialogExportShow();
+
+    /**
+   * @brief Show OTIO import dialog
+   */
+#ifdef USE_OTIO
+  bool DialogImportOTIOShow(const QList<Sequence*>& sequences);
+#endif
 
   /**
    * @brief Create a new folder in the currently active project
