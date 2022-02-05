@@ -27,6 +27,7 @@
 #include "node/project/project.h"
 #include "panel/panelmanager.h"
 #include "panel/audiomonitor/audiomonitor.h"
+#include "panel/audiomixer/audiomixer.h"
 #include "panel/curve/curve.h"
 #include "panel/node/node.h"
 #include "panel/param/param.h"
@@ -155,6 +156,7 @@ private:
   ToolPanel* tool_panel_;
   QList<TimelinePanel*> timeline_panels_;
   AudioMonitorPanel* audio_monitor_panel_;
+  AudioMixerPanel* audio_mixer_panel_;
   TaskManagerPanel* task_man_panel_;
   PixelSamplerPanel* pixel_sampler_panel_;
   ScopePanel* scope_panel_;

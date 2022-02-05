@@ -89,6 +89,7 @@ MainWindow::MainWindow(QWidget *parent) :
   task_man_panel_ = new TaskManagerPanel(this);
   AppendTimelinePanel();
   audio_monitor_panel_ = new AudioMonitorPanel(this);
+  audio_mixer_panel_ = new AudioMixerPanel(this);
   scope_panel_ = new ScopePanel(this);
 
   // Make node-related connections
@@ -775,6 +776,9 @@ void MainWindow::SetDefaultLayout()
   param_panel_->show();
   tabifyDockWidget(footage_viewer_panel_, param_panel_);
 
+  audio_mixer_panel_->show();
+  tabifyDockWidget(param_panel_, audio_mixer_panel_);
+
   node_panel_->show();
   tabifyDockWidget(param_panel_, node_panel_);
   param_panel_->raise();
@@ -806,6 +810,9 @@ void MainWindow::SetDefaultLayout()
   task_man_panel_->hide();
   task_man_panel_->setFloating(true);
   addDockWidget(Qt::BottomDockWidgetArea, task_man_panel_);
+
+  
+
 
   audio_monitor_panel_->show();
   addDockWidget(Qt::BottomDockWidgetArea, audio_monitor_panel_);

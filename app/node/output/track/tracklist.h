@@ -34,6 +34,7 @@ class Sequence;
 class TrackList : public QObject
 {
   Q_OBJECT
+
 public:
   TrackList(Sequence *parent, const Track::Type& type, const QString& track_input);
 
