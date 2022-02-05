@@ -62,6 +62,10 @@ public:
     kSubtitleBlock,
     kShapeGenerator,
     kGroupNode,
+    kOpacityEffect,
+    kFlipDistort,
+    kNoiseGenerator,
+    kTimeOffsetNode,
 
     // Count value
     kInternalNodeCount
