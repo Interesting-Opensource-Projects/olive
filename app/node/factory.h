@@ -48,8 +48,9 @@ public:
     kSolidGenerator,
     kMerge,
     kStrokeFilter,
-    kTextGeneratorLegacy,
-    kTextGenerator,
+    kTextGeneratorV1,
+    kTextGeneratorV2,
+    kTextGeneratorV3,
     kCrossDissolveTransition,
     kDipToColorTransition,
     kMosaicFilter,
@@ -66,6 +67,7 @@ public:
     kFlipDistort,
     kNoiseGenerator,
     kTimeOffsetNode,
+    kCornerPinDistort,
 
     // Count value
     kInternalNodeCount
