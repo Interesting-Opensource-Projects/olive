@@ -21,19 +21,15 @@
 #ifndef AUDIOMIXERPANEL_H
 #define AUDIOMIXERPANEL_H
 
-#include <QStackedWidget>
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QPushButton>
-#include <QSlider>
-#include <QDial>
-#include <QLabel>
+#include <QVector>
 
 #include "widget/panel/panel.h"
 #include "trackpanel.h"
 
+// TODO: Rename Project in panel/project/project.h to projectpanel.h
+
 // Get tracks track.h holds this data
-// track.h <- tracklist.h <- sequence.h <- ?
+// track.h <- tracklist.h <- sequence.h <- folder.h <- project.h <- core.h
 
 namespace olive {
 
@@ -41,21 +37,20 @@ namespace olive {
  * @brief PanelWidget wrapper around an AudioMixer
  */
 class AudioMixerPanel : public PanelWidget {
-
   Q_OBJECT
 
  public:
   AudioMixerPanel(QWidget* parent = nullptr);
 
-  //bool IsPlaying() const { return audio_monitor_->IsPlaying(); }
-
-  //void SetParams(const AudioParams& params) { audio_monitor_->SetParams(params); }
-
  private:
   virtual void Retranslate() override;
 
-  
+  void update_trackpanel();
+
+ private:
   TrackPanel* master_track_ = nullptr;
+
+  QVector<TrackPanel*> audio_track_panel_collection;
 };
 
 }  // namespace olive

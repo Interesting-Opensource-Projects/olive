@@ -18,7 +18,18 @@
 
 ***/
 
+#include <QStackedWidget>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QSlider>
+#include <QDial>
+#include <QLabel>
+
 #include "audiomixer.h"
+#include "core.h"
+#include "node/project/project.h"
+#include "node/project/folder/folder.h"
 
 namespace olive {
 
@@ -33,13 +44,48 @@ AudioMixerPanel::AudioMixerPanel(QWidget* parent) : PanelWidget(QStringLiteral("
 
   layout->addWidget(master_track_, 0, Qt::AlignLeft);
 
+
+  update_trackpanel();
+  
+
+
   
   Retranslate();
 }
+
 
 void AudioMixerPanel::Retranslate()
 {
   SetTitle(tr("Audio Mixer"));
 }
+
+void AudioMixerPanel::update_trackpanel() { 
+	
+	audio_track_panel_collection.clear();
+
+	//auto project = Core::instance()->GetActiveProject();
+    //Folder* folder = Core::instance()->GetSelectedFolderInActiveProject();
+
+	// track.h <- tracklist.h <- sequence.h <- folder.h <- project.h <- core.h
+
+
+
+	Core::instance()->main_window();
+
+	auto prj = Core::instance()->GetActiveProject();
+
+	if (prj) {
+          auto folder = prj->root();
+
+          if (folder) {
+            auto nodes = folder->children();
+          }
+    
+	}
+    
+
+
+}
+
 
 }
