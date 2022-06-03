@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -106,6 +106,29 @@ void SequenceDialog::accept()
     return;
   }
 
+  if (!VideoParams::FormatIsFloat(parameter_tab_->GetSelectedPreviewFormat())
+      && !OLIVE_CONFIG("PreviewNonFloatDontAskAgain").toBool()) {
+    QMessageBox b(this);
+    QCheckBox *dont_show_again_ = new QCheckBox(tr("Don't ask me again"));
+
+    b.setIcon(QMessageBox::Warning);
+    b.setWindowTitle(tr("Low Quality Preview"));
+    b.setText(tr("The preview resolution has been set to a non-float format. This may cause banding and clipping artifacts in the preview.\n\n"
+                 "Do you wish to continue?"));
+    b.setCheckBox(dont_show_again_);
+
+    b.addButton(QMessageBox::Yes);
+    b.addButton(QMessageBox::No);
+
+    if (b.exec() == QMessageBox::No) {
+      return;
+    }
+
+    if (dont_show_again_->isChecked()) {
+      OLIVE_CONFIG("PreviewNonFloatDontAskAgain") = true;
+    }
+  }
+
   // Generate video and audio parameter structs from data
   VideoParams video_params = VideoParams(parameter_tab_->GetSelectedVideoWidth(),
                                          parameter_tab_->GetSelectedVideoHeight(),
@@ -136,7 +159,7 @@ void SequenceDialog::accept()
     sequence_->SetVideoParams(video_params);
     sequence_->SetAudioParams(audio_params);
     sequence_->SetLabel(name_field_->text());
-    sequence_->SetVideoAutoCacheEnabled(parameter_tab_->GetSelectedPreviewAutoCache());
+    sequence_->video_frame_cache()->SetEnabled(parameter_tab_->GetSelectedPreviewAutoCache());
   }
 
   QDialog::accept();
@@ -148,14 +171,14 @@ void SequenceDialog::SetAsDefaultClicked()
                           tr("Are you sure you want to set the current parameters as defaults?"),
                           QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
     // Maybe replace with Preset system
-    Config::Current()[QStringLiteral("DefaultSequenceWidth")] = parameter_tab_->GetSelectedVideoWidth();
-    Config::Current()[QStringLiteral("DefaultSequenceHeight")] = parameter_tab_->GetSelectedVideoHeight();
-    Config::Current()[QStringLiteral("DefaultSequencePixelAspect")] = QVariant::fromValue(parameter_tab_->GetSelectedVideoPixelAspect());
-    Config::Current()[QStringLiteral("DefaultSequenceFrameRate")] = QVariant::fromValue(parameter_tab_->GetSelectedVideoFrameRate().flipped());
-    Config::Current()[QStringLiteral("DefaultSequenceInterlacing")] = parameter_tab_->GetSelectedVideoInterlacingMode();
-    Config::Current()[QStringLiteral("DefaultSequenceAudioFrequency")] = parameter_tab_->GetSelectedAudioSampleRate();
-    Config::Current()[QStringLiteral("DefaultSequenceAudioLayout")] = QVariant::fromValue(parameter_tab_->GetSelectedAudioChannelLayout());
-    Config::Current()[QStringLiteral("DefaultSequenceAutoCache")] = QVariant::fromValue(parameter_tab_->GetSelectedPreviewAutoCache());
+    OLIVE_CONFIG("DefaultSequenceWidth") = parameter_tab_->GetSelectedVideoWidth();
+    OLIVE_CONFIG("DefaultSequenceHeight") = parameter_tab_->GetSelectedVideoHeight();
+    OLIVE_CONFIG("DefaultSequencePixelAspect") = QVariant::fromValue(parameter_tab_->GetSelectedVideoPixelAspect());
+    OLIVE_CONFIG("DefaultSequenceFrameRate") = QVariant::fromValue(parameter_tab_->GetSelectedVideoFrameRate().flipped());
+    OLIVE_CONFIG("DefaultSequenceInterlacing") = parameter_tab_->GetSelectedVideoInterlacingMode();
+    OLIVE_CONFIG("DefaultSequenceAudioFrequency") = parameter_tab_->GetSelectedAudioSampleRate();
+    OLIVE_CONFIG("DefaultSequenceAudioLayout") = QVariant::fromValue(parameter_tab_->GetSelectedAudioChannelLayout());
+    OLIVE_CONFIG("DefaultSequenceAutoCache") = QVariant::fromValue(parameter_tab_->GetSelectedPreviewAutoCache());
   }
 }
 
@@ -171,7 +194,7 @@ SequenceDialog::SequenceParamCommand::SequenceParamCommand(Sequence* s,
   old_video_params_(s->GetVideoParams()),
   old_audio_params_(s->GetAudioParams()),
   old_name_(s->GetLabel()),
-  old_autocache_(s->GetVideoAutoCacheEnabled())
+  old_autocache_(s->video_frame_cache()->IsEnabled())
 {
 }
 
@@ -189,7 +212,7 @@ void SequenceDialog::SequenceParamCommand::redo()
     sequence_->SetAudioParams(new_audio_params_);
   }
   sequence_->SetLabel(new_name_);
-  sequence_->SetVideoAutoCacheEnabled(new_autocache_);
+  sequence_->video_frame_cache()->SetEnabled(new_autocache_);
 }
 
 void SequenceDialog::SequenceParamCommand::undo()
@@ -201,7 +224,7 @@ void SequenceDialog::SequenceParamCommand::undo()
     sequence_->SetAudioParams(old_audio_params_);
   }
   sequence_->SetLabel(old_name_);
-  sequence_->SetVideoAutoCacheEnabled(old_autocache_);
+  sequence_->video_frame_cache()->SetEnabled(old_autocache_);
 }
 
 }

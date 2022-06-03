@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -272,6 +272,7 @@ private:
   Menu* tools_menu_;
   QActionGroup* tools_group_;
   QAction* tools_pointer_item_;
+  QAction* tools_trackselect_item_;
   QAction* tools_edit_item_;
   QAction* tools_ripple_item_;
   QAction* tools_rolling_item_;

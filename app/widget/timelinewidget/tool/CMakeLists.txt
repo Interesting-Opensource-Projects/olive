@@ -1,5 +1,5 @@
 # Olive - Non-Linear Video Editor
-# Copyright (C) 2021 Olive Team
+# Copyright (C) 2022 Olive Team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -38,6 +38,8 @@ set(OLIVE_SOURCES
   widget/timelinewidget/tool/slide.h
   widget/timelinewidget/tool/slip.cpp
   widget/timelinewidget/tool/slip.h
+  widget/timelinewidget/tool/trackselect.cpp
+  widget/timelinewidget/tool/trackselect.h
   widget/timelinewidget/tool/transition.cpp
   widget/timelinewidget/tool/transition.h
   widget/timelinewidget/tool/tool.cpp

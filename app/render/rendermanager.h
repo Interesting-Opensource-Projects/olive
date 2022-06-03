@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -63,10 +63,10 @@ public:
     return instance_;
   }
 
-  /**
-   * @brief Generate a unique identifier for a certain node at a cconst Node *n, const Node::ValueHint &outputertain time
-   */
-  static QByteArray Hash(const Node *n, const Node::ValueHint &output, const VideoParams &params, const rational &time);
+  enum ReturnType {
+    kTexture,
+    kFrame
+  };
 
   /**
    * @brief Asynchronously generate a frame at a given time
@@ -74,43 +74,33 @@ public:
    * The ticket from this function will return a FramePtr - the rendered frame in reference color
    * space.
    *
-   * Setting `prioritize` to TRUE puts this ticket at the top of the queue. Leaving it as FALSE
-   * appends it to the bottom.
-   *
    * This function is thread-safe.
    */
-  RenderTicketPtr RenderFrame(ViewerOutput *viewer, ColorManager* color_manager,
+  RenderTicketPtr RenderFrame(Node *node, const VideoParams &vparam, const AudioParams &param, ColorManager* color_manager,
                               const rational& time, RenderMode::Mode mode,
-                              FrameHashCache* cache = nullptr, bool prioritize = false, bool texture_only = false);
-  RenderTicketPtr RenderFrame(ViewerOutput* viewer, ColorManager* color_manager,
+                              FrameHashCache* cache = nullptr, RenderTicketPriority priority = RenderTicketPriority::kNormal, ReturnType return_type = kFrame);
+  RenderTicketPtr RenderFrame(Node *node, ColorManager* color_manager,
                               const rational& time, RenderMode::Mode mode,
                               const VideoParams& video_params, const AudioParams& audio_params,
                               const QSize& force_size,
                               const QMatrix4x4& force_matrix, VideoParams::Format force_format,
                               ColorProcessorPtr force_color_output,
-                              FrameHashCache* cache = nullptr, bool prioritize = false, bool texture_only = false);
+                              FrameHashCache* cache = nullptr, RenderTicketPriority priority = RenderTicketPriority::kNormal, ReturnType return_type = kFrame);
 
   /**
    * @brief Asynchronously generate a chunk of audio
    *
    * The ticket from this function will return a SampleBufferPtr - the rendered audio.
    *
-   * Setting `prioritize` to TRUE puts this ticket at the top of the queue. Leaving it as FALSE
-   * appends it to the bottom.
-   *
    * This function is thread-safe.
    */
-  RenderTicketPtr RenderAudio(ViewerOutput* viewer, const TimeRange& r, const AudioParams& params, RenderMode::Mode mode, bool generate_waveforms, bool prioritize = false);
-  RenderTicketPtr RenderAudio(ViewerOutput *viewer, const TimeRange& r, RenderMode::Mode mode, bool generate_waveforms, bool prioritize = false);
-
-  RenderTicketPtr SaveFrameToCache(FrameHashCache* cache, FramePtr frame, const QByteArray& hash, bool prioritize = false);
+  RenderTicketPtr RenderAudio(Node *viewer, const TimeRange& r, const AudioParams& params, RenderMode::Mode mode, bool generate_waveforms, RenderTicketPriority priority = RenderTicketPriority::kNormal);
 
   virtual void RunTicket(RenderTicketPtr ticket) const override;
 
   enum TicketType {
     kTypeVideo,
-    kTypeAudio,
-    kTypeVideoDownload
+    kTypeAudio
   };
 
   Backend backend() const
@@ -141,13 +131,6 @@ private:
   ShaderCache* shader_cache_;
 
   QVariant default_shader_;
-
-  QTimer decoder_clear_timer_;
-
-  static const int kDecoderMaximumInactivity;
-
-private slots:
-  void ClearOldDecoders();
 
 };
 

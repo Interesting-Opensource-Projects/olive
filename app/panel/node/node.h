@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -40,10 +40,9 @@ public:
     return node_widget_;
   }
 
-  const QVector<Node*> &GetContexts() const
-  {
-    return node_widget_->view()->GetContexts();
-  }
+  const QVector<Node*> &GetContexts() const { return node_widget_->view()->GetContexts(); }
+
+  bool IsGroupOverlay() const { return node_widget_->view()->IsGroupOverlay(); }
 
   void SetContexts(const QVector<Node*> &nodes)
   {
@@ -53,11 +52,6 @@ public:
   void CloseContextsBelongingToProject(Project *project)
   {
     node_widget_->view()->CloseContextsBelongingToProject(project);
-  }
-
-  const QVector<Node*> &GetCurrentContexts() const
-  {
-    return node_widget_->view()->GetCurrentContexts();
   }
 
   virtual void SelectAll() override
@@ -111,10 +105,9 @@ public:
   }
 
 public slots:
-  void Select(const QVector<Node*>& nodes, bool center_view_on_item)
+  void Select(const QVector<Node::ContextPair> &p)
   {
-    node_widget_->view()->Select(nodes, center_view_on_item);
-    this->raise();
+    node_widget_->view()->Select(p, true);
   }
 
 signals:
@@ -122,7 +115,12 @@ signals:
 
   void NodesDeselected(const QVector<Node*>& nodes);
 
-  void NodeGroupOpenRequested(NodeGroup *group);
+  void NodeSelectionChanged(const QVector<Node*>& nodes);
+  void NodeSelectionChangedWithContexts(const QVector<Node::ContextPair>& nodes);
+
+  void NodeGroupOpened(NodeGroup *group);
+
+  void NodeGroupClosed();
 
 private:
   virtual void Retranslate() override

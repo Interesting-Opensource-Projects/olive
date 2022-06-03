@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,8 +28,7 @@
 #include <QTimer>
 #include <QWidget>
 
-#include "audio/packedprocessor.h"
-#include "audio/tempoprocessor.h"
+#include "audio/audioprocessor.h"
 #include "audiowaveformview.h"
 #include "common/rational.h"
 #include "node/output/viewer/viewer.h"
@@ -41,6 +40,7 @@
 #include "viewerwindow.h"
 #include "widget/playbackcontrols/playbackcontrols.h"
 #include "widget/timebased/timebasedwidget.h"
+#include "widget/timelinewidget/timelinewidget.h"
 
 namespace olive {
 
@@ -87,6 +87,13 @@ public:
 
   void SetGizmos(Node* node);
 
+  void StartCapture(TimelineWidget *source, const TimeRange &time, const Track::Reference &track);
+
+  void SetAudioScrubbingEnabled(bool e)
+  {
+    enable_audio_scrubbing_ = e;
+  }
+
 public slots:
   void Play(bool in_to_out_only);
 
@@ -116,6 +123,11 @@ public slots:
   void SetViewerPixelAspect(const rational& ratio);
 
   void UpdateTextureFromNode();
+
+  void RequestStartEditingText()
+  {
+    display_widget_->RequestStartEditingText();
+  }
 
 signals:
   /**
@@ -183,17 +195,17 @@ private:
 
   void SetDisplayImage(QVariant frame);
 
-  void RequestNextFrameForQueue(bool prioritize = false, bool increment = true);
+  RenderTicketWatcher *RequestNextFrameForQueue(RenderTicketPriority priority = RenderTicketPriority::kNormal, bool increment = true);
 
-  RenderTicketPtr GetFrame(const rational& t, bool prioritize);
+  RenderTicketPtr GetFrame(const rational& t, RenderTicketPriority priority);
 
   void FinishPlayPreprocess();
 
   int DeterminePlaybackQueueSize();
 
-  static FramePtr DecodeCachedImage(const QString &cache_path, const QByteArray &hash, const rational& time);
+  static FramePtr DecodeCachedImage(const QString &cache_path, const QUuid &cache_id, const int64_t& time);
 
-  static void DecodeCachedImage(RenderTicketPtr ticket, const QString &cache_path, const QByteArray &hash, const rational& time);
+  static void DecodeCachedImage(RenderTicketPtr ticket, const QString &cache_path, const QUuid &cache_id, const int64_t &time);
 
   bool ShouldForceWaveform() const;
 
@@ -204,6 +216,12 @@ private:
   void ClearVideoAutoCacherQueue();
 
   void DecrementPrequeuedAudio();
+
+  void ArmForRecording();
+
+  void DisarmRecording();
+
+  void CloseAudioProcessor();
 
   QStackedWidget* stack_;
 
@@ -248,12 +266,23 @@ private:
 
   std::list<RenderTicketWatcher*> audio_playback_queue_;
   rational audio_playback_queue_time_;
-  PackedProcessor packed_processor_;
-  TempoProcessor tempo_processor_;
+  AudioProcessor audio_processor_;
   QByteArray prequeued_audio_;
   static const rational kAudioPlaybackInterval;
 
   static QVector<ViewerWidget*> instances_;
+
+  bool record_armed_;
+  bool recording_;
+  TimelineWidget *recording_callback_;
+  TimeRange recording_range_;
+  Track::Reference recording_track_;
+  QString recording_filename_;
+
+  qint64 queue_starved_start_;
+  RenderTicketWatcher *first_requeue_watcher_;
+
+  bool enable_audio_scrubbing_;
 
 private slots:
   void PlaybackTimerUpdate();
@@ -269,8 +298,6 @@ private slots:
   void ShowContextMenu(const QPoint& pos);
 
   void SetZoomFromMenu(QAction* action);
-
-  void ViewerShiftedRange(const olive::rational& from, const olive::rational& to);
 
   void UpdateStack();
 
@@ -302,7 +329,14 @@ private slots:
 
   void ReceivedAudioBufferForScrubbing();
 
+  void QueueStarved();
+  void QueueNoLongerStarved();
+
   void ForceRequeueFromCurrentTime();
+
+  void UpdateAudioProcessor();
+
+  void CreateAddableAt(const QRectF &f);
 
 };
 

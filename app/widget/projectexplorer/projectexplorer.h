@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -85,6 +85,8 @@ public:
 
   void DeleteSelected();
 
+  bool SelectItem(Node *n);
+
 public slots:
   void set_view_type(ProjectToolbar::ViewType type);
 
@@ -137,6 +139,8 @@ private:
   bool DeleteItemsInternal(const QVector<Node *> &selected, bool &check_if_item_is_in_use, MultiUndoCommand *command);
 
   static QString GetHumanReadableNodeName(Node* node);
+
+  void UpdateNavBarText();
 
   /**
    * @brief Get the currently active QAbstractItemView

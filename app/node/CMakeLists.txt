@@ -1,5 +1,5 @@
 # Olive - Non-Linear Video Editor
-# Copyright (C) 2021 Olive Team
+# Copyright (C) 2022 Olive Team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@ add_subdirectory(generator)
 add_subdirectory(gizmo)
 add_subdirectory(group)
 add_subdirectory(input)
+add_subdirectory(keying)
 add_subdirectory(math)
 add_subdirectory(output)
 add_subdirectory(project)
@@ -37,8 +38,6 @@ set(OLIVE_SOURCES
   node/globals.h
   node/graph.cpp
   node/graph.h
-  node/hashtraverser.cpp
-  node/hashtraverser.h
   node/inputdragger.cpp
   node/inputdragger.h
   node/inputimmediate.cpp
@@ -47,8 +46,6 @@ set(OLIVE_SOURCES
   node/keyframe.h
   node/node.cpp
   node/node.h
-  node/nodecopypaste.cpp
-  node/nodecopypaste.h
   node/param.cpp
   node/param.h
   node/splitvalue.h

@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -156,19 +156,15 @@ bool ExportTask::Run()
   return success;
 }
 
-bool ExportTask::FrameDownloaded(FramePtr f, const QByteArray &hash, const QVector<rational> &times)
+bool ExportTask::FrameDownloaded(FramePtr f, const rational &time)
 {
-  Q_UNUSED(hash)
+  rational actual_time = time;
 
-  foreach (const rational& t, times) {
-    rational actual_time = t;
-
-    if (params_.has_custom_range()) {
-      actual_time -= params_.custom_range().in();
-    }
-
-    time_map_.insert(actual_time, f);
+  if (params_.has_custom_range()) {
+    actual_time -= params_.custom_range().in();
   }
+
+  time_map_.insert(actual_time, f);
 
   while (!IsCancelled()) {
     rational real_time = Timecode::timestamp_to_time(frame_time_,
@@ -192,7 +188,7 @@ bool ExportTask::FrameDownloaded(FramePtr f, const QByteArray &hash, const QVect
   return true;
 }
 
-bool ExportTask::AudioDownloaded(const TimeRange &range, SampleBufferPtr samples)
+bool ExportTask::AudioDownloaded(const TimeRange &range, const SampleBuffer &samples)
 {
   TimeRange adjusted_range = range;
 
@@ -221,7 +217,7 @@ bool ExportTask::EncodeSubtitle(const SubtitleBlock *sub)
   }
 }
 
-bool ExportTask::WriteAudioLoop(const TimeRange& time, SampleBufferPtr samples)
+bool ExportTask::WriteAudioLoop(const TimeRange& time, const SampleBuffer &samples)
 {
   if (!encoder_->WriteAudio(samples)) {
     SetError(encoder_->GetError());
@@ -232,7 +228,7 @@ bool ExportTask::WriteAudioLoop(const TimeRange& time, SampleBufferPtr samples)
 
   for (auto it=audio_map_.begin(); it!=audio_map_.end(); it++) {
     TimeRange t = it.key();
-    SampleBufferPtr s = it.value();
+    SampleBuffer s = it.value();
 
     if (t.in() == audio_time_) {
       // Erase from audio map since we're just about to write it

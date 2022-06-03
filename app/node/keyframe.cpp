@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -39,6 +39,11 @@ NodeKeyframe::NodeKeyframe(const rational &time, const QVariant &value, Type typ
   next_(nullptr)
 {
   setParent(parent);
+}
+
+NodeKeyframe::NodeKeyframe()
+{
+  type_ = NodeKeyframe::kLinear;
 }
 
 NodeKeyframe::~NodeKeyframe()
@@ -193,6 +198,12 @@ NodeKeyframe::BezierType NodeKeyframe::get_opposing_bezier_type(NodeKeyframe::Be
   } else {
     return kInHandle;
   }
+}
+
+bool NodeKeyframe::has_sibling_at_time(const rational &t) const
+{
+  NodeKeyframe *k = parent()->GetKeyframeAtTimeOnTrack(input(), t, track(), element());
+  return k && k != this;
 }
 
 }

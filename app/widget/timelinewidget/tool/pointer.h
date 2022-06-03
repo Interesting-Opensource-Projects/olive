@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -39,8 +39,9 @@ public:
 protected:
   virtual void FinishDrag(TimelineViewMouseEvent *event);
 
-  virtual void InitiateDrag(Block* clicked_item,
-                            Timeline::MovementMode trim_mode);
+  virtual void InitiateDrag(Block* clicked_item, Timeline::MovementMode trim_mode, Qt::KeyboardModifiers modifiers);
+
+  TimelineViewGhostItem *GetExistingGhostFromBlock(Block *block);
 
   TimelineViewGhostItem* AddGhostFromBlock(Block *block, Timeline::MovementMode mode, bool check_if_exists = false);
 
@@ -66,13 +67,14 @@ protected:
 
   void InitiateDragInternal(Block* clicked_item,
                             Timeline::MovementMode trim_mode,
+                            Qt::KeyboardModifiers modifiers,
                             bool dont_roll_trims,
                             bool allow_nongap_rolling, bool slide_instead_of_moving);
 
-  const Timeline::MovementMode& drag_movement_mode() const
-  {
-    return drag_movement_mode_;
-  }
+  const Timeline::MovementMode& drag_movement_mode() const { return drag_movement_mode_; }
+  void set_drag_movement_mode(const Timeline::MovementMode &d) { drag_movement_mode_ = d; }
+
+  static bool CanTransitionMove(TransitionBlock *transit, const QVector<Block*> &clips);
 
   void SetMovementAllowed(bool e)
   {
@@ -92,6 +94,11 @@ protected:
   void SetGapTrimmingAllowed(bool e)
   {
     gap_trimming_allowed_ = e;
+  }
+
+  void SetClickedItem(Block *b)
+  {
+    clicked_item_ = b;
   }
 
 private:

@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -55,6 +55,7 @@ QIcon icon::ToolSlip;
 QIcon icon::ToolSlide;
 QIcon icon::ToolHand;
 QIcon icon::ToolTransition;
+QIcon icon::ToolTrackSelect;
 QIcon icon::Folder;
 QIcon icon::Sequence;
 QIcon icon::Video;
@@ -68,6 +69,8 @@ QIcon icon::TriRight;
 QIcon icon::TextBold;
 QIcon icon::TextItalic;
 QIcon icon::TextUnderline;
+QIcon icon::TextStrikethrough;
+QIcon icon::TextSmallCaps;
 QIcon icon::TextAlignLeft;
 QIcon icon::TextAlignRight;
 QIcon icon::TextAlignCenter;
@@ -88,6 +91,8 @@ QIcon icon::EyeOpened;
 QIcon icon::EyeClosed;
 QIcon icon::LockOpened;
 QIcon icon::LockClosed;
+QIcon icon::Pencil;
+QIcon icon::Subtitles;
 
 void icon::LoadAll(const QString& theme)
 {
@@ -116,6 +121,7 @@ void icon::LoadAll(const QString& theme)
   ToolSlide = Create(theme, "slide");
   ToolHand = Create(theme, "hand");
   ToolTransition = Create(theme, "transition-tool");
+  ToolTrackSelect = Create(theme, "track-tool");
 
   Folder = Create(theme, "folder");
   Sequence = Create(theme, "sequence");
@@ -133,6 +139,8 @@ void icon::LoadAll(const QString& theme)
   TextBold = Create(theme, "text-bold");
   TextItalic = Create(theme, "text-italic");
   TextUnderline = Create(theme, "text-underline");
+  TextStrikethrough = Create(theme, "text-strikethrough");
+  TextSmallCaps = Create(theme, "text-small-caps");
   TextAlignLeft = Create(theme, "align-left");
   TextAlignRight = Create(theme, "align-right");
   TextAlignCenter = Create(theme, "align-center");
@@ -155,6 +163,9 @@ void icon::LoadAll(const QString& theme)
   EyeClosed = Create(theme, "eye-closed");
   LockOpened = Create(theme, "lock-opened");
   LockClosed = Create(theme, "lock-closed");
+
+  Pencil = Create(theme, "text-edit");
+  Subtitles = Create(theme, "subtitles");
 }
 
 QIcon icon::Create(const QString& theme, const QString &name)

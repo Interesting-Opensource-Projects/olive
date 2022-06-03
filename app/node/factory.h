@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -62,12 +62,19 @@ public:
     kTimeRemapNode,
     kSubtitleBlock,
     kShapeGenerator,
+    kColorDifferenceKeyKeying,
+    kDespillKeying,
     kGroupNode,
     kOpacityEffect,
     kFlipDistort,
     kNoiseGenerator,
     kTimeOffsetNode,
     kCornerPinDistort,
+    kDisplayTransform,
+    kOCIOGradingTransformLinear,
+    kChromaKey,
+    kMaskDistort,
+    kDropShadowFilter,
 
     // Count value
     kInternalNodeCount
@@ -79,7 +86,7 @@ public:
 
   static void Destroy();
 
-  static Menu* CreateMenu(QWidget *parent, bool create_none_item = false, Node::CategoryID restrict_to = Node::kCategoryUnknown);
+  static Menu* CreateMenu(QWidget *parent, bool create_none_item = false, Node::CategoryID restrict_to = Node::kCategoryUnknown, uint64_t restrict_flags = 0);
 
   static Node* CreateFromMenuAction(QAction* action);
 
@@ -93,8 +100,6 @@ public:
 
 private:
   static QList<Node*> library_;
-
-  static QVector<int> hidden_;
 
 };
 

@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -58,7 +58,7 @@ void AudioPlaybackCache::SetParameters(const AudioParams &params)
   emit ParametersChanged();
 }
 
-void AudioPlaybackCache::WritePCM(const TimeRange &range, const TimeRangeList &valid_ranges, SampleBufferPtr samples)
+void AudioPlaybackCache::WritePCM(const TimeRange &range, const TimeRangeList &valid_ranges, const SampleBuffer &samples)
 {
   // Ensure if we have enough segments to write this data, creating more if not
   qint64 length_diff = params_.time_to_bytes_per_channel(range.out()) - playlist_.GetLength();
@@ -72,7 +72,7 @@ void AudioPlaybackCache::WritePCM(const TimeRange &range, const TimeRangeList &v
   TimeRangeList ranges_we_validated;
 
   // Calculate buffer size per channel
-  qint64 buffer_size_per_channel = samples ? samples->sample_count() * params_.bytes_per_sample_per_channel() : 0;
+  qint64 buffer_size_per_channel = samples.sample_count() * params_.bytes_per_sample_per_channel();
 
   // Write each valid range to the segments
   foreach (const TimeRange& r, valid_ranges) {
@@ -114,7 +114,7 @@ void AudioPlaybackCache::WritePCM(const TimeRange &range, const TimeRangeList &v
             if (possible_write_length > 0) {
               // Assume `samples` is valid if we're here, or else `buffer_size_per_channel` and
               // therefore `possible_write_length` will be 0.
-              seg_file.write(reinterpret_cast<const char*>(samples->data(i)) + src_offset, possible_write_length);
+              seg_file.write(reinterpret_cast<const char*>(samples.data(i)) + src_offset, possible_write_length);
             }
 
             if (possible_write_length < total_write_length) {
@@ -167,109 +167,7 @@ void AudioPlaybackCache::WriteSilence(const TimeRange &range)
 {
   // WritePCM will automatically fill non-existent bytes with silence, so we just have to send
   // it an empty sample buffer
-  WritePCM(range, {range}, nullptr);
-}
-
-void AudioPlaybackCache::ShiftEvent(const rational &from_in_time, const rational &to_in_time)
-{
-  visual_.Shift(from_in_time, to_in_time);
-
-  qint64 to = params_.time_to_bytes_per_channel(to_in_time);
-  qint64 from = params_.time_to_bytes_per_channel(from_in_time);
-
-  if (from >= playlist_.GetLength()) {
-    return;
-  }
-
-  int to_seg_index = playlist_.GetIndexOfPosition(to);
-  int from_seg_index = playlist_.GetIndexOfPosition(from);
-
-  qint64 from_seg_start = playlist_.at(from_seg_index).offset();
-  qint64 from_seg_end = playlist_.at(from_seg_index).end();
-
-  if (from < to) {
-    // Shifting forwards, we must insert a new region and split a segment in half if necessary
-    int insert_index;
-
-    // Determine at what part of the array we'll be insert into
-    if (from == from_seg_start) {
-      insert_index = from_seg_index;
-    } else {
-      insert_index = from_seg_index + 1;
-
-      if (from < from_seg_end) {
-        // Split from segment into two
-        Segment second = CloneSegment(playlist_.at(from_seg_index));
-
-        TrimSegmentOut(&playlist_[from_seg_index], from - from_seg_start);
-        TrimSegmentIn(&second, from_seg_end - from);
-
-        playlist_.insert(insert_index, second);
-      }
-    }
-
-    // Insert silent segments
-    qint64 time_to_insert = to - from;
-
-    while (time_to_insert) {
-      qint64 new_seg_sz = qMin(kDefaultSegmentSizePerChannel, time_to_insert);
-
-      // Set offset to 0 for now and fill it in later
-      playlist_.insert(insert_index, CreateSegment(new_seg_sz, 0));
-
-      time_to_insert -= new_seg_sz;
-    }
-
-    UpdateOffsetsFrom(insert_index);
-
-  } else {
-    // Shifting backwards, we'll be removing segments and truncating them if necessary
-    qint64 to_seg_start = playlist_.at(to_seg_index).offset();
-    qint64 to_seg_end = playlist_.at(to_seg_index).end();
-
-    if (to_seg_index == from_seg_index) {
-      if (to > to_seg_start && from < from_seg_end) {
-        // Duplicate segment into two segments and trim each side to move the space in between
-        Segment second = CloneSegment(playlist_.at(to_seg_index));
-        from_seg_index++;
-        playlist_.insert(from_seg_index, second);
-
-        TrimSegmentOut(&playlist_[to_seg_index], to - to_seg_start);
-        TrimSegmentIn(&playlist_[from_seg_index], to_seg_end - from);
-      } else if (to == to_seg_start && from == from_seg_end) {
-        // Segment contains entire shift area, just remove it
-        RemoveSegmentFromArray(to_seg_index);
-      } else if (to == to_seg_start) {
-        // Trim segment in
-        TrimSegmentIn(&playlist_[to_seg_index], to_seg_end - from);
-      } else {
-        // Assume from == to_seg_end
-        TrimSegmentOut(&playlist_[to_seg_index], to_seg_end - to);
-      }
-    } else {
-      // Remove any segments between if there are any
-      while (from_seg_index != to_seg_index+1) {
-        RemoveSegmentFromArray(to_seg_index+1);
-        from_seg_index--;
-      }
-
-      if (from == from_seg_end) {
-        RemoveSegmentFromArray(from_seg_index);
-      } else {
-        // Assume from > from_seg_start and trim its in point
-        TrimSegmentIn(&playlist_[from_seg_index], from_seg_end - from);
-      }
-
-      if (to == to_seg_start) {
-        // Assume from >= to_seg_end, remove "to" segment
-        RemoveSegmentFromArray(to_seg_index);
-      } else {
-        TrimSegmentOut(&playlist_[to_seg_index], to_seg_end - to);
-      }
-    }
-
-    UpdateOffsetsFrom(to_seg_index);
-  }
+  WritePCM(range, {range}, SampleBuffer());
 }
 
 AudioPlaybackCache::Segment AudioPlaybackCache::CloneSegment(const AudioPlaybackCache::Segment &s) const
@@ -318,9 +216,11 @@ QString AudioPlaybackCache::GenerateSegmentFilename() const
 {
   QString new_seg_filename;
 
+  QDir cache_dir(QDir(GetCacheDirectory()).filePath(GetUuid().toString()));
+
   do {
     uint32_t r = QRandomGenerator::global()->generate();
-    new_seg_filename = QDir(GetCacheDirectory()).filePath(QStringLiteral("%1.pcm").arg(r));
+    new_seg_filename = cache_dir.filePath(QStringLiteral("%1.pcm").arg(r));
   } while (QFileInfo::exists(new_seg_filename));
 
   return new_seg_filename;
@@ -402,7 +302,7 @@ AudioPlaybackCache::PlaybackDevice *AudioPlaybackCache::CreatePlaybackDevice(QOb
   PlaybackDevice *d = new PlaybackDevice(playlist_, params_.bytes_per_sample_per_channel(), parent);
 
   // If we're child of a viewer, set the data limit so audio doesn't play beyond the length
-  if (ViewerOutput *viewer = viewer_parent()) {
+  if (ViewerOutput *viewer = dynamic_cast<ViewerOutput*>(this->parent())) {
     d->SetDataLimit(params_.time_to_bytes_per_channel(viewer->GetAudioLength()));
   }
 

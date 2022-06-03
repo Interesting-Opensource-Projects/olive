@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -38,13 +38,14 @@ void BlockSplitCommand::redo()
   if (!reconnect_tree_command_) {
     reconnect_tree_command_ = new MultiUndoCommand();
     new_block_ = static_cast<Block*>(Node::CopyNodeInGraph(block_, reconnect_tree_command_));
-    if (ClipBlock *new_clip = dynamic_cast<ClipBlock*>(new_block_)) {
-      ClipBlock *old_clip = static_cast<ClipBlock*>(block_);
-      new_clip->waveform() = old_clip->waveform();
-    }
   }
 
   reconnect_tree_command_->redo_now();
+
+  if (ClipBlock *new_clip = dynamic_cast<ClipBlock*>(new_block_)) {
+    ClipBlock *old_clip = static_cast<ClipBlock*>(block_);
+    new_clip->waveform() = old_clip->waveform();
+  }
 
   // Determine our new lengths
   rational new_length = point_ - block_->in();
@@ -52,7 +53,6 @@ void BlockSplitCommand::redo()
 
   // Begin an operation
   Track* track = block_->track();
-  track->BeginOperation();
 
   // Set lengths
   block_->set_length_and_media_out(new_length);
@@ -75,15 +75,11 @@ void BlockSplitCommand::redo()
       }
     }
   }
-
-  track->EndOperation();
 }
 
 void BlockSplitCommand::undo()
 {
   Track* track = block_->track();
-
-  track->BeginOperation();
 
   if (moved_transition_.IsValid()) {
     Node::DisconnectEdge(new_block(), moved_transition_);
@@ -95,8 +91,6 @@ void BlockSplitCommand::undo()
 
   // If we ran a reconnect command, disconnect now
   reconnect_tree_command_->undo_now();
-
-  track->EndOperation();
 }
 
 //

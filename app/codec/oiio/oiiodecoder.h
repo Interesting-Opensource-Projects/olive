@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -44,7 +44,7 @@ public:
 
 protected:
   virtual bool OpenInternal() override;
-  virtual FramePtr RetrieveVideoInternal(const rational &timecode, const RetrieveVideoParams& divider, const QAtomicInt *cancelled) override;
+  virtual TexturePtr RetrieveVideoInternal(Renderer *renderer, const rational& timecode, const RetrieveVideoParams& params, const QAtomicInt *cancelled) override;
   virtual void CloseInternal() override;
 
 private:
@@ -52,15 +52,17 @@ private:
 
   static bool FileTypeIsSupported(const QString& fn);
 
-  bool OpenImageHandler(const QString& fn);
+  bool OpenImageHandler(const QString& fn, int subimage);
 
   void CloseImageHandle();
 
+  static VideoParams GetVideoParamsFromImageSpec(const OIIO::ImageSpec &spec);
+
   VideoParams::Format pix_fmt_;
+  OIIO::TypeDesc::BASETYPE oiio_pix_fmt_;
 
-  int channel_count_;
-
-  OIIO::ImageBuf* buffer_;
+  Frame buffer_;
+  RetrieveVideoParams last_params_;
 
   static QStringList supported_formats_;
 

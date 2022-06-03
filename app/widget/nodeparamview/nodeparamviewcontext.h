@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -43,16 +43,18 @@ public:
     return contexts_;
   }
 
-  const QMap<Node*, NodeParamViewItem*> &GetItems() const
+  const QVector<NodeParamViewItem*> &GetItems() const
   {
     return items_;
   }
 
+  NodeParamViewItem *GetItem(Node *node, Node *ctx);
+
   void AddNode(NodeParamViewItem *item);
 
-  void RemoveNode(Node *node);
+  void RemoveNode(Node *node, Node *ctx);
 
-  void Clear();
+  void RemoveNodesWithContext(Node *ctx);
 
   void SetInputChecked(const NodeInput &input, bool e);
 
@@ -61,6 +63,9 @@ public:
   void SetTimeTarget(Node *n);
 
   void SetTime(const rational &time);
+
+signals:
+  void AboutToDeleteItem(NodeParamViewItem *item);
 
 public slots:
   void AddContext(Node *node)
@@ -81,10 +86,12 @@ private:
 
   QVector<Node*> contexts_;
 
-  QMap<Node*, NodeParamViewItem*> items_;
+  QVector<NodeParamViewItem*> items_;
 
 private slots:
   void AddEffectButtonClicked();
+
+  void AddEffectMenuItemTriggered(QAction *a);
 
 };
 

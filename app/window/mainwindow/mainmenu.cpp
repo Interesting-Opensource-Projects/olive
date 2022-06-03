@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -207,6 +207,11 @@ MainMenu::MainMenu(MainWindow *parent) :
   tools_pointer_item_->setData(Tool::kPointer);
   tools_group_->addAction(tools_pointer_item_);
 
+  tools_trackselect_item_ = tools_menu_->AddItem("trackselecttool", this, &MainMenu::ToolItemTriggered, tr("D"));
+  tools_trackselect_item_->setCheckable(true);
+  tools_trackselect_item_->setData(Tool::kTrackSelect);
+  tools_group_->addAction(tools_trackselect_item_);
+
   tools_edit_item_ = tools_menu_->AddItem("edittool", this, &MainMenu::ToolItemTriggered, tr("X"));
   tools_edit_item_->setCheckable(true);
   tools_edit_item_->setData(Tool::kEdit);
@@ -376,7 +381,7 @@ void MainMenu::ToolsMenuAboutToShow()
 
 void MainMenu::PlaybackMenuAboutToShow()
 {
-  playback_loop_item_->setChecked(Config::Current()["Loop"].toBool());
+  playback_loop_item_->setChecked(OLIVE_CONFIG("Loop").toBool());
 }
 
 void MainMenu::SequenceMenuAboutToShow()
@@ -501,7 +506,7 @@ void MainMenu::PlayInToOutTriggered()
 
 void MainMenu::LoopTriggered(bool enabled)
 {
-  Config::Current()["Loop"] = enabled;
+  OLIVE_CONFIG("Loop") = enabled;
 }
 
 void MainMenu::NextFrameTriggered()
@@ -763,6 +768,7 @@ void MainMenu::Retranslate()
   // Tools menu
   tools_menu_->setTitle(tr("&Tools"));
   tools_pointer_item_->setText(tr("Pointer Tool"));
+  tools_trackselect_item_->setText(tr("Track Select Tool"));
   tools_edit_item_->setText(tr("Edit Tool"));
   tools_ripple_item_->setText(tr("Ripple Tool"));
   tools_rolling_item_->setText(tr("Rolling Tool"));

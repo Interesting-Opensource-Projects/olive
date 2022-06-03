@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,6 +27,7 @@
 #include "common/cancelableobject.h"
 #include "node/output/track/track.h"
 #include "render/job/footagejob.h"
+#include "render/job/colortransformjob.h"
 #include "value.h"
 
 namespace olive {
@@ -36,7 +37,7 @@ class NodeTraverser
 public:
   NodeTraverser();
 
-  NodeValueTable GenerateTable(const Node *n, const Node::ValueHint &hint, const TimeRange &range);
+  NodeValueTable GenerateTable(const Node *n, const TimeRange &range, const Node *next_node = nullptr);
 
   NodeValueDatabase GenerateDatabase(const Node *node, const TimeRange &range);
 
@@ -48,6 +49,8 @@ public:
   NodeValue GenerateRowValueElement(const Node::ValueHint &hint, NodeValue::Type preferred_type, NodeValueTable *table);
   int GenerateRowValueElementIndex(const Node::ValueHint &hint, NodeValue::Type preferred_type, const NodeValueTable *table);
   int GenerateRowValueElementIndex(const Node *node, const QString &input, int element, const NodeValueTable *table);
+
+  void Transform(QTransform *transform, const Node *start, const Node *end, const TimeRange &range);
 
   static NodeGlobals GenerateGlobals(const VideoParams &params, const TimeRange &time);
   static NodeGlobals GenerateGlobals(const VideoParams &params, const rational &time)
@@ -65,26 +68,58 @@ public:
     video_params_ = params;
   }
 
+  const AudioParams& GetCacheAudioParams() const
+  {
+    return audio_params_;
+  }
+
+  void SetCacheAudioParams(const AudioParams& params)
+  {
+    audio_params_ = params;
+  }
+
   static int GetChannelCountFromJob(const GenerateJob& job);
+
+  static TexturePtr GetMainTextureFromJob(const GenerateJob& job);
 
 protected:
   NodeValueTable ProcessInput(const Node *node, const QString &input, const TimeRange &range);
 
   virtual NodeValueTable GenerateBlockTable(const Track *track, const TimeRange& range);
 
-  virtual TexturePtr ProcessVideoFootage(const FootageJob &stream, const rational &input_time);
+  virtual void ProcessVideoFootage(TexturePtr destination, const FootageJob &stream, const rational &input_time){}
 
-  virtual SampleBufferPtr ProcessAudioFootage(const FootageJob &stream, const TimeRange &input_time);
+  virtual void ProcessAudioFootage(SampleBuffer &destination, const FootageJob &stream, const TimeRange &input_time){}
 
-  virtual TexturePtr ProcessShader(const Node *node, const TimeRange &range, const ShaderJob& job);
+  virtual void ProcessShader(TexturePtr destination, const Node *node, const TimeRange &range, const ShaderJob& job){}
 
-  virtual SampleBufferPtr ProcessSamples(const Node *node, const TimeRange &range, const SampleJob &job);
+  virtual void ProcessColorTransform(TexturePtr destination, const Node *node, const ColorTransformJob& job){}
 
-  virtual TexturePtr ProcessFrameGeneration(const Node *node, const GenerateJob& job);
+  virtual void ProcessSamples(SampleBuffer &destination, const Node *node, const TimeRange &range, const SampleJob &job){}
 
-  virtual TexturePtr GetCachedTexture(const QByteArray& hash);
+  virtual void ProcessFrameGeneration(TexturePtr destination, const Node *node, const GenerateJob& job){}
 
-  virtual void SaveCachedTexture(const QByteArray& hash, TexturePtr texture);
+  virtual void ConvertToReferenceSpace(TexturePtr destination, TexturePtr source, const QString &input_cs){}
+
+  virtual TexturePtr CreateTexture(const VideoParams &p)
+  {
+    return CreateDummyTexture(p);
+  }
+
+  virtual SampleBuffer CreateSampleBuffer(const AudioParams &params, int sample_count)
+  {
+    // Return dummy by default
+    return SampleBuffer();
+  }
+
+  SampleBuffer CreateSampleBuffer(const AudioParams &params, const rational &length)
+  {
+    if (params.is_valid()) {
+      return CreateSampleBuffer(params, params.time_to_samples(length));
+    } else {
+      return SampleBuffer();
+    }
+  }
 
   virtual bool CanCacheFrames()
   {
@@ -93,10 +128,16 @@ protected:
 
   QVector2D GenerateResolution() const;
 
-  bool IsCancelled() const
+  bool IsCancelled()
   {
-    return cancel_ && *cancel_;
+    bool c = cancel_ && *cancel_;
+    if (c) {
+      heard_cancel_ = true;
+    }
+    return c;
   }
+
+  bool HeardCancel() const { return heard_cancel_; }
 
   const QAtomicInt *GetCancelPointer() const
   {
@@ -108,14 +149,23 @@ protected:
     cancel_ = cancel;
   }
 
+  void ResolveJobs(NodeValue &value, const TimeRange &range);
+
 private:
-  void PostProcessTable(const Node *node, const Node::ValueHint &hint, const TimeRange &range, NodeValueTable &output_params);
+  void PreProcessRow(const TimeRange &range, NodeValueRow &row);
 
   TexturePtr CreateDummyTexture(const VideoParams &p);
 
   VideoParams video_params_;
 
+  AudioParams audio_params_;
+
   const QAtomicInt *cancel_;
+  bool heard_cancel_;
+
+  const Node *transform_start_;
+  const Node *transform_now_;
+  QTransform *transform_;
 
 };
 

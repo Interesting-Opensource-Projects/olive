@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,10 +29,11 @@
 
 namespace olive {
 
-class TimelinePoints
+class TimelinePoints : public QObject
 {
+  Q_OBJECT
 public:
-  TimelinePoints() = default;
+  TimelinePoints(QObject *parent = nullptr);
 
   TimelineMarkerList* markers();
   const TimelineMarkerList* markers() const;
@@ -41,9 +42,9 @@ public:
   const TimelineWorkArea* workarea() const;
 
 private:
-  TimelineMarkerList markers_;
+  TimelineMarkerList *markers_;
 
-  TimelineWorkArea workarea_;
+  TimelineWorkArea *workarea_;
 
 };
 

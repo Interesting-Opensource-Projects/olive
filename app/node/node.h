@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -22,12 +22,10 @@
 #define NODE_H
 
 #include <map>
-#include <QCryptographicHash>
 #include <QMutex>
 #include <QObject>
 #include <QPainter>
 #include <QPointF>
-#include <QUuid>
 #include <QXmlStreamWriter>
 
 #include "codec/frame.h"
@@ -41,6 +39,8 @@
 #include "node/inputimmediate.h"
 #include "node/param.h"
 #include "render/audioparams.h"
+#include "render/audioplaybackcache.h"
+#include "render/framehashcache.h"
 #include "render/job/generatejob.h"
 #include "render/job/samplejob.h"
 #include "render/job/shaderjob.h"
@@ -48,6 +48,10 @@
 #include "splitvalue.h"
 
 namespace olive {
+
+#define NODE_DEFAULT_FUNCTIONS(x) \
+  NODE_DEFAULT_DESTRUCTOR(x) \
+  NODE_COPY_FUNCTION(x)
 
 #define NODE_DEFAULT_DESTRUCTOR(x) \
   virtual ~x() override {DisconnectAll();}
@@ -79,27 +83,32 @@ public:
   enum CategoryID {
     kCategoryUnknown = -1,
 
-    kCategoryInput,
     kCategoryOutput,
     kCategoryGenerator,
     kCategoryMath,
+    kCategoryKeying,
     kCategoryFilter,
     kCategoryColor,
-    kCategoryGeneral,
+    kCategoryTime,
     kCategoryTimeline,
-    kCategoryChannels,
     kCategoryTransition,
     kCategoryDistort,
     kCategoryProject,
-    kCategoryVideoEffect,
-    kCategoryAudioEffect,
 
     kCategoryCount
   };
 
   enum Flag {
     kNone = 0,
-    kDontShowInParamView = 0x1
+    kDontShowInParamView = 0x1,
+    kVideoEffect = 0x2,
+    kAudioEffect = 0x4,
+    kDontShowInCreateMenu = 0x8
+  };
+
+  struct ContextPair {
+    Node *node;
+    Node *context;
   };
 
   Node();
@@ -120,9 +129,6 @@ public:
   NodeGraph* parent() const;
 
   Project* project() const;
-
-  const QUuid &GetUUID() const {return uuid_;}
-  void SetUUID(const QUuid &uuid) {uuid_ = uuid;}
 
   const uint64_t &GetFlags() const
   {
@@ -213,6 +219,16 @@ public:
   bool HasParamWithID(const QString& id) const
   {
     return HasInputWithID(id);
+  }
+
+  FrameHashCache* video_frame_cache() const
+  {
+    return video_cache_;
+  }
+
+  AudioPlaybackCache* audio_playback_cache() const
+  {
+    return audio_cache_;
   }
 
   struct Position
@@ -325,6 +341,8 @@ public:
 
   virtual QString GetInputName(const QString& id) const;
 
+  void SetInputName(const QString& id, const QString& name);
+
   bool IsInputHidden(const QString& input) const;
   bool IsInputConnectable(const QString& input) const;
   bool IsInputKeyframable(const QString& input) const;
@@ -407,6 +425,10 @@ public:
   QVariant GetDefaultValue(const QString& input) const;
   SplitValue GetSplitDefaultValue(const QString& input) const;
   QVariant GetSplitDefaultValueOnTrack(const QString& input, int track) const;
+
+  void SetDefaultValue(const QString& input, const QVariant &val);
+  void SetSplitDefaultValue(const QString& input, const SplitValue &val);
+  void SetSplitDefaultValueOnTrack(const QString& input, const QVariant &val, int track);
 
   const QVector<NodeKeyframeTrack>& GetKeyframeTracks(const QString& input, int element) const;
   const QVector<NodeKeyframeTrack>& GetKeyframeTracks(const NodeInput& input) const
@@ -540,6 +562,16 @@ public:
 
   int InputArraySize(const QString& id) const;
 
+  NodeInput GetEffectInput()
+  {
+    return effect_input_.isEmpty() ? NodeInput() : NodeInput(this, effect_input_);
+  }
+
+  const QString &GetEffectInputID() const
+  {
+    return effect_input_;
+  }
+
   class ValueHint {
   public:
     explicit ValueHint(const QVector<NodeValue::Type> &types = QVector<NodeValue::Type>(), int index = -1, const QString &tag = QString()) :
@@ -567,8 +599,6 @@ public:
     {
     }
 
-    void Hash(QCryptographicHash &hash) const;
-
     const QVector<NodeValue::Type> &types() const { return type_; }
     const int &index() const { return index_; }
     const QString& tag() const { return tag_; }
@@ -583,8 +613,6 @@ public:
     QString tag_;
 
   };
-
-  static void Hash(const Node *node, const ValueHint &hint, QCryptographicHash& hash, const NodeGlobals &globals, const VideoParams& video_params);
 
   const QMap<InputElementPair, ValueHint> &GetValueHints() const
   {
@@ -645,15 +673,32 @@ public:
    */
   QVector<Node *> GetImmediateDependencies() const;
 
+  struct ShaderRequest
+  {
+    ShaderRequest(const QString &shader_id)
+    {
+      id = shader_id;
+    }
+
+    ShaderRequest(const QString &shader_id, const QString &shader_stub)
+    {
+      id = shader_id;
+      stub = shader_stub;
+    }
+
+    QString id;
+    QString stub;
+  };
+
   /**
    * @brief Generate hardware accelerated code for this Node
    */
-  virtual ShaderCode GetShaderCode(const QString& shader_id) const;
+  virtual ShaderCode GetShaderCode(const ShaderRequest &request) const;
 
   /**
    * @brief If Value() pushes a ShaderJob, this is the function that will process them.
    */
-  virtual void ProcessSamples(const NodeValueRow &values, const SampleBufferPtr input, SampleBufferPtr output, int index) const;
+  virtual void ProcessSamples(const NodeValueRow &values, const SampleBuffer &input, SampleBuffer &output, int index) const;
 
   /**
    * @brief If Value() pushes a GenerateJob, override this function for the image to create
@@ -766,19 +811,6 @@ public:
   }
 
   /**
-   * @brief Limits cache invalidation temporarily
-   *
-   * If you intend to do a number of operations in quick succession, you can optimize it by running
-   * this function with EndOperation().
-   */
-  virtual void BeginOperation();
-
-  /**
-   * @brief Stops limiting cache invalidation and flushes changes
-   */
-  virtual void EndOperation();
-
-  /**
    * @brief Adjusts time that should be sent to nodes connected to certain inputs.
    *
    * If this node modifies the `time` (i.e. a clip converting sequence time to media time), this function should be
@@ -796,14 +828,14 @@ public:
    *
    * Nodes must be of the same types (i.e. have the same ID)
    */
-  static void CopyInputs(const Node *source, Node* destination, bool include_connections = true);
+  static void CopyInputs(const Node *source, Node* destination, bool include_connections = true, MultiUndoCommand *command = nullptr);
 
-  static void CopyInput(const Node *src, Node* dst, const QString& input, bool include_connections, bool traverse_arrays);
+  static void CopyInput(const Node *src, Node* dst, const QString& input, bool include_connections, bool traverse_arrays, MultiUndoCommand *command);
 
-  static void CopyValuesOfElement(const Node* src, Node* dst, const QString& input, int src_element, int dst_element);
-  static void CopyValuesOfElement(const Node* src, Node* dst, const QString& input, int element)
+  static void CopyValuesOfElement(const Node* src, Node* dst, const QString& input, int src_element, int dst_element, MultiUndoCommand *command = nullptr);
+  static void CopyValuesOfElement(const Node* src, Node* dst, const QString& input, int element, MultiUndoCommand *command = nullptr)
   {
-    return CopyValuesOfElement(src, dst, input, element, element);
+    return CopyValuesOfElement(src, dst, input, element, element, command);
   }
 
   /**
@@ -850,6 +882,8 @@ public:
   {
     return gizmos_;
   }
+
+  virtual QTransform GizmoTransformation(const NodeValueRow &row, const NodeGlobals &globals) const { return QTransform(); }
 
   virtual void UpdateGizmoPositions(const NodeValueRow &row, const NodeGlobals &globals){}
 
@@ -946,14 +980,17 @@ public:
   };
 
   InputFlags GetInputFlags(const QString& input) const;
+  void SetInputFlags(const QString &input, const InputFlags &f);
+
+  virtual void LoadFinishedEvent(){}
 
   static void SetValueAtTime(const NodeInput &input, const rational &time, const QVariant &value, int track, MultiUndoCommand *command, bool insert_on_all_tracks_if_no_key);
 
+  static std::list<Node*> FindPath(Node *from, Node *to, int path_index = 0);
+
+  static const QString kEnabledInput;
+
 protected:
-  virtual void Hash(QCryptographicHash& hash, const NodeGlobals &globals, const VideoParams& video_params) const;
-
-  void HashAddNodeSignature(QCryptographicHash &hash) const;
-
   void InsertInput(const QString& id, NodeValue::Type type, const QVariant& default_value, InputFlags flags, int index);
 
   void PrependInput(const QString& id, NodeValue::Type type, const QVariant& default_value, InputFlags flags = InputFlags(kInputFlagNormal))
@@ -978,8 +1015,6 @@ protected:
 
   void RemoveInput(const QString& id);
 
-  void SetInputName(const QString& id, const QString& name);
-
   void SetComboBoxStrings(const QString& id, const QStringList& strings)
   {
     SetInputProperty(id, QStringLiteral("combo_str"), strings);
@@ -995,13 +1030,6 @@ protected:
    * In some scenarios, it may be preferable to handle this signal separately in order to
    */
   void IgnoreInvalidationsFrom(const QString &input_id);
-
-  void IgnoreHashingFrom(const QString& input_id);
-
-  int GetOperationStack() const
-  {
-    return operation_stack_;
-  }
 
   enum GizmoScaleHandles {
     kGizmoScaleTopLeft,
@@ -1028,6 +1056,11 @@ protected:
   virtual void OutputDisconnectedEvent(const NodeInput& input);
 
   virtual void childEvent(QChildEvent *event) override;
+
+  void SetEffectInput(const QString &input)
+  {
+    effect_input_ = input;
+  }
 
   void SetToolTip(const QString& s)
   {
@@ -1123,6 +1156,8 @@ signals:
 
   void NodeRemovedFromContext(Node *node);
 
+  void InputFlagsChanged(const QString &input, const InputFlags &flags);
+
 private:
   class ArrayInsertCommand : public UndoCommand
   {
@@ -1217,6 +1252,31 @@ private:
     int array_size;
   };
 
+  class ImmediateRemoveAllKeyframesCommand : public UndoCommand
+  {
+  public:
+    ImmediateRemoveAllKeyframesCommand(NodeInputImmediate *immediate) :
+      immediate_(immediate)
+    {}
+
+    virtual Project* GetRelevantProject() const override { return nullptr; }
+
+  protected:
+    virtual void prepare() override;
+
+    virtual void redo() override;
+
+    virtual void undo() override;
+
+  private:
+    NodeInputImmediate *immediate_;
+
+    QObject memory_manager_;
+
+    QVector<NodeKeyframe*> keys_;
+
+  };
+
   NodeInputImmediate* CreateImmediate(const QString& input);
 
   NodeInputImmediate* GetImmediate(const QString& input, int element) const;
@@ -1273,8 +1333,6 @@ private:
 
   QVector<Node*> GetDependenciesInternal(bool traverse, bool exclusive_only) const;
 
-  void HashInputElement(QCryptographicHash& hash, const QString &input, int element, const NodeGlobals &globals, const VideoParams &video_params) const;
-
   void ParameterValueChanged(const QString &input, int element, const olive::TimeRange &range);
   void ParameterValueChanged(const NodeInput& input, const olive::TimeRange &range)
   {
@@ -1294,8 +1352,6 @@ private:
   void ClearElement(const QString &input, int index);
 
   QVector<QString> ignore_connections_;
-
-  QVector<QString> ignore_when_hashing_;
 
   /**
    * @brief Internal variable for whether this Node can be deleted or not
@@ -1332,19 +1388,21 @@ private:
 
   Folder* folder_;
 
-  int operation_stack_;
-
   bool cache_result_;
 
   QMap<InputElementPair, ValueHint> value_hints_;
 
   PositionMap context_positions_;
 
-  QUuid uuid_;
-
   uint64_t flags_;
 
   QVector<NodeGizmo*> gizmos_;
+
+  QString effect_input_;
+
+  FrameHashCache *video_cache_;
+
+  AudioPlaybackCache *audio_cache_;
 
 private slots:
   /**

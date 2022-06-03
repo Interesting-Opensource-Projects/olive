@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -41,11 +41,15 @@ public:
 
   virtual QStringList GetPixelFormatsForCodec(ExportCodec::Codec c) const override;
 
+  virtual std::vector<AudioParams::Format> GetSampleFormatsForCodec(ExportCodec::Codec c) const override;
+
   virtual bool Open() override;
 
   virtual bool WriteFrame(olive::FramePtr frame, olive::rational time) override;
 
-  virtual bool WriteAudio(olive::SampleBufferPtr audio) override;
+  virtual bool WriteAudio(const olive::SampleBuffer &audio) override;
+
+  bool WriteAudioData(const AudioParams &audio_params, const uint8_t **data, int input_sample_count);
 
   virtual bool WriteSubtitle(const SubtitleBlock *sub_block) override;
 
@@ -76,9 +80,9 @@ private:
   void FlushEncoders();
   void FlushCodecCtx(AVCodecContext* codec_ctx, AVStream *stream);
 
-  bool InitializeResampleContext(SampleBufferPtr audio);
+  bool InitializeResampleContext(const AudioParams &audio);
 
-  static const AVCodec *GetEncoder(ExportCodec::Codec c);
+  static const AVCodec *GetEncoder(ExportCodec::Codec c, AudioParams::Format aformat);
 
   AVFormatContext* fmt_ctx_;
 

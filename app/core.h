@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -182,7 +182,7 @@ public:
    *
    * @param urls
    */
-  void ImportFiles(const QStringList& urls, ProjectViewModel *model, Folder *parent);
+  void ImportFiles(const QStringList& urls, Folder *parent);
 
   /**
    * @brief Get the currently active tool
@@ -246,9 +246,6 @@ public:
    * @brief Recursively count files in a file/directory list
    */
   static int CountFilesInFileList(const QFileInfoList &filenames);
-
-  static QVariant GetPreferenceForRenderMode(RenderMode::Mode mode, const QString& preference);
-  static void SetPreferenceForRenderMode(RenderMode::Mode mode, const QString& preference, const QVariant& value);
 
   /**
    * @brief Show a dialog to the user to rename a set of nodes
@@ -444,6 +441,8 @@ public slots:
 
   void RequestPixelSamplingInViewers(bool e);
 
+  void WarnCacheFull();
+
 signals:
   /**
    * @brief Signal emitted when a project is opened
@@ -546,7 +545,7 @@ private:
   /**
    * @brief Retrieves the currently most active sequence for exporting
    */
-  ViewerOutput *GetSequenceToExport();
+  bool GetSequenceToExport(ViewerOutput **viewer, rational *time);
 
   static QString GetAutoRecoveryIndexFilename();
 
@@ -623,6 +622,8 @@ private:
    * @brief How many widgets currently need pixel sampling access
    */
   int pixel_sampling_users_;
+
+  bool shown_cache_full_warning_;
 
 private slots:
   void SaveAutorecovery();

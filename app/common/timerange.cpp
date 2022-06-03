@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -44,6 +44,7 @@ const rational &TimeRange::out() const
 
 const rational &TimeRange::length() const
 {
+  Q_ASSERT(!length_.isNaN());
   return length_;
 }
 
@@ -173,7 +174,11 @@ void TimeRange::normalize()
   }
 
   // Calculate length
-  length_ = out_ - in_;
+  if (out_ == RATIONAL_MIN || out_ == RATIONAL_MAX || in_ == RATIONAL_MIN || in_ == RATIONAL_MAX) {
+    length_ = rational::NaN;
+  } else {
+    length_ = out_ - in_;
+  }
 }
 
 void TimeRangeList::insert(const TimeRangeList &list_to_add)

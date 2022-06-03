@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 #ifndef VIDEOPARAMS_H
 #define VIDEOPARAMS_H
 
+#include <QVector2D>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
 
@@ -261,8 +262,6 @@ public:
 
   static int GetScaledDimension(int dim, int divider);
 
-  QByteArray toBytes() const;
-
   bool enabled() const
   {
     return enabled_;
@@ -272,6 +271,12 @@ public:
   {
     enabled_ = e;
   }
+
+  float x() const { return x_; }
+  void set_x(float x) { x_ = x; }
+  float y() const { return y_; }
+  void set_y(float y) { y_ = y; }
+  QVector2D offset() const { return QVector2D(x_, y_); }
 
   int stream_index() const
   {
@@ -387,6 +392,8 @@ private:
   int64_t duration_;
   bool premultiplied_alpha_;
   QString colorspace_;
+  float x_;
+  float y_;
 
 };
 

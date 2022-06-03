@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,37 +28,26 @@ namespace olive {
 
 const QString ViewerOutput::kVideoParamsInput = QStringLiteral("video_param_in");
 const QString ViewerOutput::kAudioParamsInput = QStringLiteral("audio_param_in");
+const QString ViewerOutput::kSubtitleParamsInput = QStringLiteral("subtitle_param_in");
 const QString ViewerOutput::kTextureInput = QStringLiteral("tex_in");
 const QString ViewerOutput::kSamplesInput = QStringLiteral("samples_in");
-const QString ViewerOutput::kVideoAutoCacheInput = QStringLiteral("video_autocache_in");
-const QString ViewerOutput::kAudioAutoCacheInput = QStringLiteral("audio_autocache_in");
 
 #define super Node
 
 ViewerOutput::ViewerOutput(bool create_buffer_inputs, bool create_default_streams) :
   last_length_(0),
   video_length_(0),
-  audio_length_(0),
-  video_frame_cache_(this),
-  audio_playback_cache_(this),
-  video_cache_enabled_(true),
-  audio_cache_enabled_(true)
+  audio_length_(0)
 {
   AddInput(kVideoParamsInput, NodeValue::kVideoParams, InputFlags(kInputFlagNotConnectable | kInputFlagNotKeyframable | kInputFlagArray | kInputFlagHidden));
 
   AddInput(kAudioParamsInput, NodeValue::kAudioParams, InputFlags(kInputFlagNotConnectable | kInputFlagNotKeyframable | kInputFlagArray | kInputFlagHidden));
 
+  AddInput(kSubtitleParamsInput, NodeValue::kSubtitleParams, InputFlags(kInputFlagNotConnectable | kInputFlagNotKeyframable | kInputFlagArray | kInputFlagHidden));
+
   if (create_buffer_inputs) {
     AddInput(kTextureInput, NodeValue::kTexture, InputFlags(kInputFlagNotKeyframable));
     AddInput(kSamplesInput, NodeValue::kSamples, InputFlags(kInputFlagNotKeyframable));
-
-    AddInput(kVideoAutoCacheInput, NodeValue::kBoolean, false, InputFlags(kInputFlagNotKeyframable | kInputFlagNotConnectable));
-    IgnoreHashingFrom(kVideoAutoCacheInput);
-    IgnoreInvalidationsFrom(kVideoAutoCacheInput);
-
-    AddInput(kAudioAutoCacheInput, NodeValue::kBoolean, false, InputFlags(kInputFlagNotKeyframable | kInputFlagNotConnectable));
-    IgnoreHashingFrom(kAudioAutoCacheInput);
-    IgnoreInvalidationsFrom(kAudioAutoCacheInput);
   }
 
   if (create_default_streams) {
@@ -68,11 +57,8 @@ ViewerOutput::ViewerOutput(bool create_buffer_inputs, bool create_default_stream
   }
 
   SetFlags(kDontShowInParamView);
-}
 
-Node *ViewerOutput::copy() const
-{
-  return new ViewerOutput();
+  timeline_points_ = new TimelinePoints(this);
 }
 
 QString ViewerOutput::Name() const
@@ -103,6 +89,7 @@ QString ViewerOutput::duration() const
   // Get first enabled streams
   VideoParams video = GetFirstEnabledVideoStream();
   AudioParams audio = GetFirstEnabledAudioStream();
+  SubtitleParams sub = GetFirstEnabledSubtitleStream();
 
   if (video.is_valid() && video.video_type() != VideoParams::kVideoTypeStill) {
     // Prioritize video
@@ -116,6 +103,8 @@ QString ViewerOutput::duration() const
     }
 
     using_timebase = audio.sample_rate_as_time_base();
+  } else if (sub.is_valid()) {
+    using_timebase = OLIVE_CONFIG("DefaultSequenceFrameRate").value<rational>();
   }
 
   if (using_timebase.isNull()) {
@@ -154,6 +143,11 @@ bool ViewerOutput::HasEnabledAudioStreams() const
   return GetFirstEnabledAudioStream().is_valid();
 }
 
+bool ViewerOutput::HasEnabledSubtitleStreams() const
+{
+  return GetFirstEnabledSubtitleStream().is_valid();
+}
+
 VideoParams ViewerOutput::GetFirstEnabledVideoStream() const
 {
   int sz = GetVideoStreamCount();
@@ -184,75 +178,61 @@ AudioParams ViewerOutput::GetFirstEnabledAudioStream() const
   return AudioParams();
 }
 
+SubtitleParams ViewerOutput::GetFirstEnabledSubtitleStream() const
+{
+  int sz = GetSubtitleStreamCount();
+
+  for (int i=0; i<sz; i++) {
+    SubtitleParams sp = GetSubtitleParams(i);
+
+    if (sp.enabled()) {
+      return sp;
+    }
+  }
+
+  return SubtitleParams();
+}
+
 void ViewerOutput::set_default_parameters()
 {
-  int width = Config::Current()["DefaultSequenceWidth"].toInt();
-  int height = Config::Current()["DefaultSequenceHeight"].toInt();
+  int width = OLIVE_CONFIG("DefaultSequenceWidth").toInt();
+  int height = OLIVE_CONFIG("DefaultSequenceHeight").toInt();
 
   SetVideoParams(VideoParams(
                    width,
                    height,
-                   Config::Current()["DefaultSequenceFrameRate"].value<rational>(),
-                 static_cast<VideoParams::Format>(Config::Current()["OfflinePixelFormat"].toInt()),
+                   OLIVE_CONFIG("DefaultSequenceFrameRate").value<rational>(),
+                 static_cast<VideoParams::Format>(OLIVE_CONFIG("OfflinePixelFormat").toInt()),
       VideoParams::kInternalChannelCount,
-      Config::Current()["DefaultSequencePixelAspect"].value<rational>(),
-      Config::Current()["DefaultSequenceInterlacing"].value<VideoParams::Interlacing>(),
+      OLIVE_CONFIG("DefaultSequencePixelAspect").value<rational>(),
+      OLIVE_CONFIG("DefaultSequenceInterlacing").value<VideoParams::Interlacing>(),
       VideoParams::generate_auto_divider(width, height)
       ));
   SetAudioParams(AudioParams(
-                   Config::Current()["DefaultSequenceAudioFrequency"].toInt(),
-                 Config::Current()["DefaultSequenceAudioLayout"].toULongLong(),
+                   OLIVE_CONFIG("DefaultSequenceAudioFrequency").toInt(),
+                 OLIVE_CONFIG("DefaultSequenceAudioLayout").toULongLong(),
       AudioParams::kInternalFormat
       ));
 
-  SetVideoAutoCacheEnabled(Config::Current()["DefaultSequenceAutoCache"].toBool());
-}
-
-void ViewerOutput::ShiftVideoCache(const rational &from, const rational &to)
-{
-  if (video_cache_enabled_) {
-    video_frame_cache_.Shift(from, to);
-  }
-
-  ShiftVideoEvent(from, to);
-}
-
-void ViewerOutput::ShiftAudioCache(const rational &from, const rational &to)
-{
-  if (audio_cache_enabled_) {
-    audio_playback_cache_.Shift(from, to);
-  }
-
-  ShiftAudioEvent(from, to);
-}
-
-void ViewerOutput::ShiftCache(const rational &from, const rational &to)
-{
-  ShiftVideoCache(from, to);
-  ShiftAudioCache(from, to);
+  video_frame_cache()->SetEnabled(OLIVE_CONFIG("DefaultSequenceAutoCache").toBool());
 }
 
 void ViewerOutput::InvalidateCache(const TimeRange& range, const QString& from, int element, InvalidateCacheOptions options)
 {
   Q_UNUSED(element)
 
-  if ((video_cache_enabled_ && (from == kTextureInput || from == kVideoParamsInput))
-      || (audio_cache_enabled_ && (from == kSamplesInput || from == kAudioParamsInput))) {
-    TimeRange invalidated_range(qMax(rational(0), range.in()),
-                                qMin(GetLength(), range.out()));
-
-    if (invalidated_range.in() != invalidated_range.out()) {
-      if (from == kTextureInput || from == kVideoParamsInput) {
-        video_frame_cache_.Invalidate(invalidated_range);
-      } else {
-        audio_playback_cache_.Invalidate(invalidated_range);
-      }
-    }
-  }
-
   VerifyLength();
 
   super::InvalidateCache(range, from, element, options);
+
+  // TEMP: Just to restore the intended functionality for now. This will be removed later.
+  if (from == kTextureInput) {
+    TimeRange r = range.Intersected(TimeRange(0, GetVideoLength()));
+    if (r.length() != 0) video_frame_cache()->Invalidate(r);
+  } else if (from == kSamplesInput) {
+    TimeRange r = range.Intersected(TimeRange(0, GetAudioLength()));
+    if (r.length() != 0) audio_playback_cache()->Invalidate(r);
+  }
 }
 
 QVector<Track::Reference> ViewerOutput::GetEnabledStreamsAsReferences() const
@@ -279,6 +259,16 @@ QVector<Track::Reference> ViewerOutput::GetEnabledStreamsAsReferences() const
     }
   }
 
+  {
+    int sp_sz = GetSubtitleStreamCount();
+
+    for (int i=0; i<sp_sz; i++) {
+      if (GetSubtitleParams(i).enabled()) {
+        refs.append(Track::Reference(Track::kSubtitle, i));
+      }
+    }
+  }
+
   return refs;
 }
 
@@ -288,6 +278,7 @@ void ViewerOutput::Retranslate()
 
   SetInputName(kVideoParamsInput, tr("Video Parameters"));
   SetInputName(kAudioParamsInput, tr("Audio Parameters"));
+  SetInputName(kSubtitleParamsInput, tr("Subtitle Parameters"));
 
   if (HasInputWithID(kTextureInput)) {
     SetInputName(kTextureInput, tr("Texture"));
@@ -295,14 +286,6 @@ void ViewerOutput::Retranslate()
 
   if (HasInputWithID(kSamplesInput)) {
     SetInputName(kSamplesInput, tr("Samples"));
-  }
-
-  if (HasInputWithID(kVideoAutoCacheInput)) {
-    SetInputName(kVideoAutoCacheInput, tr("Auto-Cache Video"));
-  }
-
-  if (HasInputWithID(kAudioAutoCacheInput)) {
-    SetInputName(kAudioAutoCacheInput, tr("Auto-Cache Audio"));
   }
 }
 
@@ -347,7 +330,7 @@ rational ViewerOutput::VerifyLengthInternal(Track::Type type) const
   switch (type) {
   case Track::kVideo:
     if (IsInputConnected(kTextureInput)) {
-      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kTextureInput), GetValueHintForInput(kTextureInput), TimeRange(0, 0));
+      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kTextureInput), TimeRange(0, 0));
       rational r = t.Get(NodeValue::kRational, QStringLiteral("length")).value<rational>();
       if (!r.isNaN()) {
         return r;
@@ -356,7 +339,7 @@ rational ViewerOutput::VerifyLengthInternal(Track::Type type) const
     break;
   case Track::kAudio:
     if (IsInputConnected(kSamplesInput)) {
-      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kSamplesInput), GetValueHintForInput(kSamplesInput), TimeRange(0, 0));
+      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kSamplesInput), TimeRange(0, 0));
       rational r = t.Get(NodeValue::kRational, QStringLiteral("length")).value<rational>();;
       if (!r.isNaN()) {
         return r;
@@ -394,11 +377,7 @@ Node::ValueHint ViewerOutput::GetConnectedSampleValueHint()
 
 void ViewerOutput::InputValueChangedEvent(const QString &input, int element)
 {
-  if (input == kVideoAutoCacheInput) {
-    emit VideoAutoCacheChanged(GetVideoAutoCacheEnabled());
-  } else if (input == kAudioAutoCacheInput) {
-    emit AudioAutoCacheChanged(GetAudioAutoCacheEnabled());
-  } else if (element == 0) {
+  if (element == 0) {
     if (input == kVideoParamsInput) {
 
       VideoParams new_video_params = GetVideoParams();
@@ -421,9 +400,10 @@ void ViewerOutput::InputValueChangedEvent(const QString &input, int element)
       }
 
       if (frame_rate_changed) {
-        if (video_cache_enabled_) {
-          video_frame_cache_.SetTimebase(new_video_params.frame_rate_as_time_base());
-        }
+        // FIXME: Will need to find a better way to update this soon
+        //if (video_frame_cache()->IsEnabled()) {
+          video_frame_cache()->SetTimebase(new_video_params.frame_rate_as_time_base());
+        //}
         emit FrameRateChanged(new_video_params.frame_rate());
       }
 
@@ -443,9 +423,10 @@ void ViewerOutput::InputValueChangedEvent(const QString &input, int element)
 
       emit AudioParamsChanged();
 
-      if (audio_cache_enabled_) {
-        audio_playback_cache_.SetParameters(GetAudioParams());
-      }
+      // FIXME: Will need to find a better way to update this soon
+      //if (audio_playback_cache()->IsEnabled()) {
+        audio_playback_cache()->SetParameters(GetAudioParams());
+      //}
 
       cached_audio_params_ = new_audio_params;
 
@@ -455,25 +436,15 @@ void ViewerOutput::InputValueChangedEvent(const QString &input, int element)
   super::InputValueChangedEvent(input, element);
 }
 
-void ViewerOutput::ShiftVideoEvent(const rational &from, const rational &to)
-{
-  Q_UNUSED(from)
-  Q_UNUSED(to)
-}
-
-void ViewerOutput::ShiftAudioEvent(const rational &from, const rational &to)
-{
-  Q_UNUSED(from)
-  Q_UNUSED(to)
-}
-
 void ViewerOutput::set_parameters_from_footage(const QVector<ViewerOutput *> footage)
 {
   foreach (ViewerOutput* f, footage) {
     QVector<VideoParams> video_streams = f->GetEnabledVideoStreams();
     QVector<AudioParams> audio_streams = f->GetEnabledAudioStreams();
 
-    foreach (const VideoParams& s, video_streams) {
+    for (int i=0; i<video_streams.size(); i++) {
+      const VideoParams& s = video_streams.at(i);
+
       bool found_video_params = false;
       rational using_timebase;
 
@@ -481,6 +452,11 @@ void ViewerOutput::set_parameters_from_footage(const QVector<ViewerOutput *> foo
         // If this is a still image, we'll use it's resolution but won't set
         // `found_video_params` in case something with a frame rate comes along which we'll
         // prioritize
+        if (i > 0) {
+          // Ignore still images past stream 0
+          continue;
+        }
+
         using_timebase = GetVideoParams().time_base();
       } else {
         using_timebase = s.frame_rate_as_time_base();
@@ -490,7 +466,7 @@ void ViewerOutput::set_parameters_from_footage(const QVector<ViewerOutput *> foo
       SetVideoParams(VideoParams(s.width(),
                                    s.height(),
                                    using_timebase,
-                                   static_cast<VideoParams::Format>(Config::Current()[QStringLiteral("OfflinePixelFormat")].toInt()),
+                                   static_cast<VideoParams::Format>(OLIVE_CONFIG("OfflinePixelFormat").toInt()),
                        VideoParams::kInternalChannelCount,
                        s.pixel_aspect_ratio(),
                        s.interlacing(),
@@ -510,19 +486,29 @@ void ViewerOutput::set_parameters_from_footage(const QVector<ViewerOutput *> foo
 
 int ViewerOutput::AddStream(Track::Type type, const QVariant& value)
 {
+  return SetStream(type, value, -1);
+}
+
+int ViewerOutput::SetStream(Track::Type type, const QVariant &value, int index_in)
+{
   QString id;
 
   if (type == Track::kVideo) {
     id = kVideoParamsInput;
   } else if (type == Track::kAudio) {
     id = kAudioParamsInput;
+  } else if (type == Track::kSubtitle) {
+    id = kSubtitleParamsInput;
   } else {
     return -1;
   }
 
   // Add another video/audio param to the array for this stream
-  int index = InputArraySize(id);
-  InputArrayAppend(id);
+  int index = (index_in == -1) ? InputArraySize(id) : index_in;
+
+  if (index >= InputArraySize(id)) {
+    InputArrayResize(id, index+1);
+  }
 
   SetStandardValue(id, value, index);
 

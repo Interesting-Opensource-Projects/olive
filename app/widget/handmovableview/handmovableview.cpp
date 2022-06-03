@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@ namespace olive {
 HandMovableView::HandMovableView(QWidget* parent) :
   super(parent),
   dragging_hand_(false),
-  scroll_zooms_by_default_(Config::Current()[QStringLiteral("ScrollZooms")].toBool())
+  scroll_zooms_by_default_(OLIVE_CONFIG("ScrollZooms").toBool())
 {
   connect(Core::instance(), &Core::ToolChanged, this, &HandMovableView::ApplicationToolChanged);
 }

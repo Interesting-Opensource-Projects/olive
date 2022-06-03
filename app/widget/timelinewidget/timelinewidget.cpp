@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -31,6 +31,8 @@
 #include "dialog/sequence/sequence.h"
 #include "dialog/speedduration/speeddurationdialog.h"
 #include "node/block/transition/transition.h"
+#include "node/project/serializer/serializer.h"
+#include "task/project/import/import.h"
 #include "tool/add.h"
 #include "tool/beam.h"
 #include "tool/edit.h"
@@ -41,6 +43,7 @@
 #include "tool/rolling.h"
 #include "tool/slide.h"
 #include "tool/slip.h"
+#include "tool/trackselect.h"
 #include "tool/transition.h"
 #include "tool/zoom.h"
 #include "tool/tool.h"
@@ -52,6 +55,7 @@
 #include "widget/menu/menu.h"
 #include "widget/menu/menushared.h"
 #include "widget/nodeview/nodeviewundo.h"
+#include "widget/timeruler/timeruler.h"
 
 namespace olive {
 
@@ -62,7 +66,8 @@ TimelineWidget::TimelineWidget(QWidget *parent) :
   rubberband_(QRubberBand::Rectangle, this),
   active_tool_(nullptr),
   use_audio_time_units_(false),
-  subtitle_show_command_(nullptr)
+  subtitle_show_command_(nullptr),
+  subtitle_tentative_track_(nullptr)
 {
   QVBoxLayout* vert_layout = new QVBoxLayout(this);
   vert_layout->setSpacing(0);
@@ -75,11 +80,11 @@ TimelineWidget::TimelineWidget(QWidget *parent) :
   timecode_label_->SetAlignment(Qt::AlignCenter);
   timecode_label_->SetDisplayType(RationalSlider::kTime);
   timecode_label_->setVisible(false);
+  timecode_label_->SetMinimum(0);
   connect(timecode_label_, &RationalSlider::ValueChanged, this, &TimelineWidget::SetTimeAndSignal);
   ruler_and_time_layout->addWidget(timecode_label_);
 
   ruler_and_time_layout->addWidget(ruler());
-  ruler()->SetSnapService(this);
 
   // Create list of TimelineViews - these MUST correspond to the ViewType enum
 
@@ -87,19 +92,20 @@ TimelineWidget::TimelineWidget(QWidget *parent) :
   vert_layout->addWidget(view_splitter_);
 
   // Video view
-  views_.append(new TimelineAndTrackView(Qt::AlignBottom));
+  views_.append(AddTimelineAndTrackView(Qt::AlignBottom));
 
   // Audio view
-  views_.append(new TimelineAndTrackView(Qt::AlignTop));
+  views_.append(AddTimelineAndTrackView(Qt::AlignTop));
 
   // Subtitle view
-  views_.append(new TimelineAndTrackView(Qt::AlignTop));
+  views_.append(AddTimelineAndTrackView(Qt::AlignTop));
 
   // Create tools
   tools_.resize(olive::Tool::kCount);
   tools_.fill(nullptr);
 
   tools_.replace(olive::Tool::kPointer, new PointerTool(this));
+  tools_.replace(olive::Tool::kTrackSelect, new TrackSelectTool(this));
   tools_.replace(olive::Tool::kEdit, new EditTool(this));
   tools_.replace(olive::Tool::kRipple, new RippleTool(this));
   tools_.replace(olive::Tool::kRolling, new RollingTool(this));
@@ -183,6 +189,14 @@ TimelineWidget::TimelineWidget(QWidget *parent) :
 
   connect(Core::instance(), &Core::ToolChanged, this, &TimelineWidget::ToolChanged);
   connect(Core::instance(), &Core::AddableObjectChanged, this, &TimelineWidget::AddableObjectChanged);
+
+  signal_block_change_timer_ = new QTimer(this);
+  signal_block_change_timer_->setInterval(1);
+  signal_block_change_timer_->setSingleShot(true);
+  connect(signal_block_change_timer_, &QTimer::timeout, this, [this]{
+    signal_block_change_timer_->stop();
+    emit BlockSelectionChanged(selected_blocks_);
+  });
 }
 
 TimelineWidget::~TimelineWidget()
@@ -300,66 +314,6 @@ void TimelineWidget::DisconnectNodeEvent(ViewerOutput *n)
   }
 }
 
-void TimelineWidget::CopyNodesToClipboardCallback(const QVector<Node *> &nodes, ProjectSerializer::SaveData *sdata, void *userdata)
-{
-  // Cache the earliest in point so all copied clips have a "relative" in point that can be pasted anywhere
-  QVector<Block*>& selected = *static_cast<QVector<Block*>*>(userdata);
-  rational earliest_in = RATIONAL_MAX;
-  ProjectSerializer::SerializedProperties properties;
-
-  foreach (Block* block, selected) {
-    earliest_in = qMin(earliest_in, block->in());
-  }
-
-  foreach (Block* block, selected) {
-    properties[block][QStringLiteral("in")] = (block->in() - earliest_in).toString();
-    properties[block][QStringLiteral("track")] = block->track()->ToReference().ToString();
-  }
-
-  sdata->SetProperties(properties);
-}
-
-void TimelineWidget::PasteNodesToClipboardCallback(const QVector<Node *> &nodes, const ProjectSerializer::LoadData &load_data, void *userdata)
-{
-  bool insert = *(bool*)userdata;
-
-  MultiUndoCommand *command = new MultiUndoCommand();
-
-  foreach (Node *n, nodes) {
-    command->add_child(new NodeAddCommand(GetConnectedNode()->project(), n));
-  }
-
-  rational paste_start = GetTime();
-
-  if (insert) {
-    rational paste_end = GetTime();
-
-    for (auto it=load_data.properties.cbegin(); it!=load_data.properties.cend(); it++) {
-      rational length = static_cast<Block*>(it.key())->length();
-      rational in = rational::fromString(it.value()[QStringLiteral("in")]);
-
-      paste_end = qMax(paste_end, paste_start + in + length);
-    }
-
-    if (paste_end != paste_start) {
-      InsertGapsAt(paste_start, paste_end - paste_start, command);
-    }
-  }
-
-  for (auto it=load_data.properties.cbegin(); it!=load_data.properties.cend(); it++) {
-    Block *block = static_cast<Block*>(it.key());
-    rational in = rational::fromString(it.value()[QStringLiteral("in")]);
-    Track::Reference track = Track::Reference::FromString(it.value()[QStringLiteral("track")]);
-
-    command->add_child(new TrackPlaceBlockCommand(sequence()->track_list(track.type()),
-                                                  track.index(),
-                                                  block,
-                                                  paste_start + in));
-  }
-
-  Core::instance()->undo_stack()->pushIfHasChildren(command);
-}
-
 void TimelineWidget::SelectAll()
 {
   QVector<Block*> newly_selected_blocks;
@@ -462,8 +416,7 @@ void TimelineWidget::SplitAtPlayhead()
 void TimelineWidget::ReplaceBlocksWithGaps(const QVector<Block *> &blocks,
                                            bool remove_from_graph,
                                            MultiUndoCommand *command,
-                                           bool handle_transitions,
-                                           bool handle_invalidations)
+                                           bool handle_transitions)
 {
   foreach (Block* b, blocks) {
     if (dynamic_cast<GapBlock*>(b)) {
@@ -474,7 +427,7 @@ void TimelineWidget::ReplaceBlocksWithGaps(const QVector<Block *> &blocks,
 
     Track* original_track = b->track();
 
-    command->add_child(new TrackReplaceBlockWithGapCommand(original_track, b, handle_transitions, handle_invalidations));
+    command->add_child(new TrackReplaceBlockWithGapCommand(original_track, b, handle_transitions));
 
     if (remove_from_graph) {
       command->add_child(new NodeRemoveWithExclusiveDependenciesAndDisconnect(b));
@@ -484,6 +437,11 @@ void TimelineWidget::ReplaceBlocksWithGaps(const QVector<Block *> &blocks,
 
 void TimelineWidget::DeleteSelected(bool ripple)
 {
+  if (ruler()->hasFocus()) {
+    ruler()->DeleteSelected();
+    return;
+  }
+
   QVector<Block*> selected_list = GetSelectedBlocks();
   QVector<Block*> blocks_to_delete;
 
@@ -523,13 +481,13 @@ void TimelineWidget::DeleteSelected(bool ripple)
   }
 
   // Replace clips with gaps (effectively deleting them)
-  ReplaceBlocksWithGaps(clips_to_delete, true, command, false, !ripple);
+  ReplaceBlocksWithGaps(clips_to_delete, true, command, false);
 
   // Insert ripple command now that it's all cleaned up gaps
   TimelineRippleDeleteGapsAtRegionsCommand *ripple_command = nullptr;
   rational new_playhead = RATIONAL_MAX;
   if (ripple) {
-    QVector<QPair<Track*, TimeRange> > range_list;
+    TimelineRippleDeleteGapsAtRegionsCommand::RangeList range_list;
 
     foreach (Block* b, blocks_to_delete) {
       range_list.append({b->track(), b->range()});
@@ -610,21 +568,19 @@ void TimelineWidget::ToggleLinksOnSelected()
   Core::instance()->undo_stack()->push(new NodeLinkManyCommand(blocks, link));
 }
 
-void TimelineWidget::CopySelected(bool cut)
+bool TimelineWidget::CopySelected(bool cut)
 {
-  if (!GetConnectedNode()) {
-    return;
+  if (super::CopySelected(cut)) {
+    return true;
   }
 
-  QVector<Block*> selected = GetSelectedBlocks();
-
-  if (selected.isEmpty()) {
-    return;
+  if (!GetConnectedNode() || selected_blocks_.isEmpty()) {
+    return false;
   }
 
   QVector<Node*> selected_nodes;
 
-  foreach (Block* block, selected) {
+  foreach (Block* block, selected_blocks_) {
     selected_nodes.append(block);
 
     QVector<Node*> deps = block->GetDependencies();
@@ -636,20 +592,47 @@ void TimelineWidget::CopySelected(bool cut)
     }
   }
 
-  CopyNodesToClipboard(selected_nodes, &selected);
+  ProjectSerializer::SaveData sdata(selected_nodes.first()->project());
+  sdata.SetOnlySerializeNodesAndResolveGroups(selected_nodes);
+
+  // Cache the earliest in point so all copied clips have a "relative" in point that can be pasted anywhere
+  rational earliest_in = RATIONAL_MAX;
+  ProjectSerializer::SerializedProperties properties;
+
+  foreach (Block* block, selected_blocks_) {
+    earliest_in = qMin(earliest_in, block->in());
+  }
+
+  foreach (Block* block, selected_blocks_) {
+    properties[block][QStringLiteral("in")] = (block->in() - earliest_in).toString();
+    properties[block][QStringLiteral("track")] = block->track()->ToReference().ToString();
+  }
+
+  sdata.SetProperties(properties);
+
+  ProjectSerializer::Copy(sdata, QStringLiteral("timeline"));
 
   if (cut) {
     DeleteSelected();
   }
+
+  return true;
 }
 
-void TimelineWidget::Paste(bool insert)
+bool TimelineWidget::Paste()
 {
-  if (!GetConnectedNode()) {
-    return;
+  if (super::Paste()) {
+    return true;
+  }  if (!GetConnectedNode()) {
+    return false;
   }
 
-  PasteNodesFromClipboard(&insert);
+  return PasteInternal(false);
+}
+
+void TimelineWidget::PasteInsert()
+{
+  PasteInternal(true);
 }
 
 void TimelineWidget::DeleteInToOut(bool ripple)
@@ -765,6 +748,73 @@ void TimelineWidget::ShowSpeedDurationDialogForSelectedClips()
   if (!clips.isEmpty()) {
     SpeedDurationDialog sdd(clips, timebase(), this);
     sdd.exec();
+  }
+}
+
+void TimelineWidget::RecordingCallback(const QString &filename, const TimeRange &time, const Track::Reference &track)
+{
+  ProjectImportTask task(GetConnectedNode()->project()->root(), {filename});
+  task.Start();
+
+  MultiUndoCommand *import_command = task.GetCommand();
+  Core::instance()->undo_stack()->pushIfHasChildren(import_command);
+
+  if (task.GetImportedFootage().empty()) {
+    qCritical() << "Failed to import recorded audio file" << filename;
+  } else {
+    import_tool_->PlaceAt({task.GetImportedFootage().front()}, time.in(), false, track.index());
+  }
+}
+
+void TimelineWidget::EnableRecordingOverlay(const TimelineCoordinate &coord)
+{
+  foreach (TimelineAndTrackView* tview, views_) {
+    tview->view()->EnableRecordingOverlay(coord);
+  }
+}
+
+void TimelineWidget::DisableRecordingOverlay()
+{
+  foreach (TimelineAndTrackView* tview, views_) {
+    tview->view()->DisableRecordingOverlay();
+  }
+}
+
+void TimelineWidget::AddTentativeSubtitleTrack()
+{
+  if (!subtitle_show_command_) {
+    // Determine if we need to do anything
+    QList<int> sz = view_splitter_->sizes();
+    bool should_adjust_splitter = (sz[Track::kSubtitle] == 0);
+    bool should_add_sub_track = (sequence() && sequence()->track_list(Track::kSubtitle)->GetTrackCount() == 0);
+
+    if (should_adjust_splitter || should_add_sub_track) {
+      // Create command
+      subtitle_show_command_ = new MultiUndoCommand();
+
+      if (should_adjust_splitter) {
+        sz[Track::kSubtitle] = height() / Track::kCount;
+        subtitle_show_command_->add_child(new SetSplitterSizesCommand(view_splitter_, sz));
+      }
+
+      if (should_add_sub_track) {
+        TimelineAddTrackCommand *track_add_cmd = new TimelineAddTrackCommand(sequence()->track_list(Track::kSubtitle));
+        subtitle_tentative_track_ = track_add_cmd->track();
+        subtitle_show_command_->add_child(track_add_cmd);
+      }
+
+      subtitle_show_command_->redo_now();
+    }
+  }
+}
+
+void TimelineWidget::ClearTentativeSubtitleTrack()
+{
+  if (subtitle_show_command_) {
+    subtitle_show_command_->undo_now();
+    delete subtitle_show_command_;
+    subtitle_show_command_ = nullptr;
+    subtitle_tentative_track_ = nullptr;
   }
 }
 
@@ -1021,6 +1071,17 @@ void TimelineWidget::ShowContextMenu()
 
     menu.addSeparator();
 
+    if (ClipBlock *clip = dynamic_cast<ClipBlock*>(selected.first())) {
+      if (clip->connected_viewer()) {
+        QAction *reveal_in_project = menu.addAction(tr("Reveal in Project"));
+        reveal_in_project->setData(reinterpret_cast<quintptr>(clip->connected_viewer()));
+        connect(reveal_in_project, &QAction::triggered, this, &TimelineWidget::RevealInProject);
+      }
+    }
+
+    QAction* rename_action = menu.addAction(tr("Rename"));
+    connect(rename_action, &QAction::triggered, this, &TimelineWidget::RenameSelectedBlocks);
+
     QAction* properties_action = menu.addAction(tr("Properties"));
     connect(properties_action, &QAction::triggered, this, &TimelineWidget::ShowSpeedDurationDialogForSelectedClips);
   }
@@ -1093,32 +1154,9 @@ void TimelineWidget::AddableObjectChanged()
 {
   // Special cast for subtitle adding - ensure section is visible
   if (Core::instance()->tool() == Tool::kAdd && Core::instance()->GetSelectedAddableObject() == Tool::kAddableSubtitle) {
-    if (!subtitle_show_command_) {
-      // Determine if we need to do anything
-      QList<int> sz = view_splitter_->sizes();
-      bool should_adjust_splitter = (sz[Track::kSubtitle] == 0);
-      bool should_add_sub_track = (sequence() && sequence()->track_list(Track::kSubtitle)->GetTrackCount() == 0);
-
-      if (should_adjust_splitter || should_add_sub_track) {
-        // Create command
-        subtitle_show_command_ = new MultiUndoCommand();
-
-        if (should_adjust_splitter) {
-          sz[Track::kSubtitle] = height() / Track::kCount;
-          subtitle_show_command_->add_child(new SetSplitterSizesCommand(view_splitter_, sz));
-        }
-
-        if (should_add_sub_track) {
-          subtitle_show_command_->add_child(new TimelineAddTrackCommand(sequence()->track_list(Track::kSubtitle)));
-        }
-
-        subtitle_show_command_->redo_now();
-      }
-    }
-  } else if (subtitle_show_command_) {
-    subtitle_show_command_->undo_now();
-    delete subtitle_show_command_;
-    subtitle_show_command_ = nullptr;
+    AddTentativeSubtitleTrack();
+  } else {
+    ClearTentativeSubtitleTrack();
   }
 }
 
@@ -1161,7 +1199,40 @@ void TimelineWidget::SetScrollZoomsByDefaultOnAllViews(bool e)
 
 void TimelineWidget::SignalBlockSelectionChange()
 {
-  emit BlockSelectionChanged(selected_blocks_);
+  signal_block_change_timer_->stop();
+  signal_block_change_timer_->start();
+}
+
+void TimelineWidget::RevealInProject()
+{
+  QAction *a = static_cast<QAction*>(sender());
+
+  ViewerOutput *item_to_reveal = reinterpret_cast<ViewerOutput*>(a->data().value<quintptr>());
+
+  emit RevealViewerInProject(item_to_reveal);
+}
+
+void TimelineWidget::RenameSelectedBlocks()
+{
+  MultiUndoCommand *command = new MultiUndoCommand();
+  QVector<Node*> nodes(selected_blocks_.size());
+
+  for (int i=0; i<nodes.size(); i++) {
+    nodes[i] = selected_blocks_[i];
+  }
+
+  Core::instance()->LabelNodes(nodes);
+  Core::instance()->undo_stack()->pushIfHasChildren(command);
+}
+
+void TimelineWidget::TrackAboutToBeDeleted(Track *track)
+{
+  if (track == subtitle_tentative_track_) {
+    // User is deleting the tentative subtitle track. Technically they shouldn't do this, but they
+    // might if they misinterpret it as permanent. If so, we handle it cleanly by pushing our
+    // command as if the action really were permanent.
+    Core::instance()->undo_stack()->push(TakeSubtitleSectionCommand());
+  }
 }
 
 void TimelineWidget::AddGhost(TimelineViewGhostItem *ghost)
@@ -1334,7 +1405,7 @@ void TimelineWidget::SignalSelectedBlocks(QVector<Block *> input, bool filter)
 
   selected_blocks_.append(input);
 
-  emit SignalBlockSelectionChange();
+  SignalBlockSelectionChange();
 }
 
 void TimelineWidget::SignalDeselectedBlocks(const QVector<Block *> &deselected_blocks)
@@ -1347,7 +1418,7 @@ void TimelineWidget::SignalDeselectedBlocks(const QVector<Block *> &deselected_b
     selected_blocks_.removeOne(b);
   }
 
-  emit SignalBlockSelectionChange();
+  SignalBlockSelectionChange();
 }
 
 void TimelineWidget::SignalDeselectedAllBlocks()
@@ -1494,13 +1565,6 @@ void TimelineWidget::EditTo(Timeline::MovementMode mode)
   Core::instance()->undo_stack()->pushIfHasChildren(command);
 }
 
-void TimelineWidget::ShowSnap(const QVector<rational> &times)
-{
-  foreach (TimelineAndTrackView* tview, views_) {
-    tview->view()->EnableSnap(times);
-  }
-}
-
 void TimelineWidget::UpdateViewports(const Track::Type &type)
 {
   if (type == Track::kNone) {
@@ -1552,11 +1616,61 @@ QVector<Block *> TimelineWidget::GetBlocksInGlobalRect(const QPoint &p1, const Q
   return blocks_in_rect;
 }
 
-void TimelineWidget::HideSnaps()
+bool TimelineWidget::PasteInternal(bool insert)
 {
-  foreach (TimelineAndTrackView* tview, views_) {
-    tview->view()->DisableSnap();
+  if (!GetConnectedNode()) {
+    return false;
   }
+
+  ProjectSerializer::Result res = ProjectSerializer::Paste(QStringLiteral("timeline"));
+  if (res.GetLoadedNodes().isEmpty()) {
+    return false;
+  }
+
+  MultiUndoCommand *command = new MultiUndoCommand();
+
+  foreach (Node *n, res.GetLoadedNodes()) {
+    command->add_child(new NodeAddCommand(GetConnectedNode()->project(), n));
+  }
+
+  rational paste_start = GetTime();
+
+  if (insert) {
+    rational paste_end = GetTime();
+
+    for (auto it=res.GetLoadData().properties.cbegin(); it!=res.GetLoadData().properties.cend(); it++) {
+      rational length = static_cast<Block*>(it.key())->length();
+      rational in = rational::fromString(it.value()[QStringLiteral("in")]);
+
+      paste_end = qMax(paste_end, paste_start + in + length);
+    }
+
+    if (paste_end != paste_start) {
+      InsertGapsAt(paste_start, paste_end - paste_start, command);
+    }
+  }
+
+  for (auto it=res.GetLoadData().properties.cbegin(); it!=res.GetLoadData().properties.cend(); it++) {
+    Block *block = static_cast<Block*>(it.key());
+    rational in = rational::fromString(it.value()[QStringLiteral("in")]);
+    Track::Reference track = Track::Reference::FromString(it.value()[QStringLiteral("track")]);
+
+    command->add_child(new TrackPlaceBlockCommand(sequence()->track_list(track.type()),
+                                                  track.index(),
+                                                  block,
+                                                  paste_start + in));
+  }
+
+  Core::instance()->undo_stack()->pushIfHasChildren(command);
+
+  return true;
+}
+
+TimelineAndTrackView *TimelineWidget::AddTimelineAndTrackView(Qt::Alignment alignment)
+{
+  TimelineAndTrackView *v = new TimelineAndTrackView(alignment);
+  connect(v->track_view(), &TrackView::AboutToDeleteTrack, this, &TimelineWidget::TrackAboutToBeDeleted);
+  return v;
 }
 
 QByteArray TimelineWidget::SaveSplitterState() const
@@ -1711,107 +1825,6 @@ void TimelineWidget::SetSelections(const TimelineWidgetSelections &s, bool proce
 Block *TimelineWidget::GetItemAtScenePos(const TimelineCoordinate& coord)
 {
   return views_.at(coord.GetTrack().type())->view()->GetItemAtScenePos(coord.GetFrame(), coord.GetTrack().index());
-}
-
-struct SnapData {
-  rational time;
-  rational movement;
-};
-
-QVector<SnapData> AttemptSnap(const QVector<double>& screen_pt,
-                              double compare_pt,
-                              const QVector<rational>& start_times,
-                              const rational& compare_time) {
-  const qreal kSnapRange = 10; // FIXME: Hardcoded number
-
-  QVector<SnapData> snap_data;
-
-  for (int i=0;i<screen_pt.size();i++) {
-    // Attempt snapping to clip out point
-    if (InRange(screen_pt.at(i), compare_pt, kSnapRange)) {
-      snap_data.append({compare_time, compare_time - start_times.at(i)});
-    }
-  }
-
-  return snap_data;
-}
-
-bool TimelineWidget::SnapPoint(QVector<rational> start_times, rational* movement, int snap_points)
-{
-  if (!GetConnectedNode()) {
-    return false;
-  }
-
-  QVector<double> screen_pt;
-
-  foreach (const rational& s, start_times) {
-    screen_pt.append(TimeToScene(s + *movement));
-  }
-
-  QVector<SnapData> potential_snaps;
-
-  if (snap_points & kSnapToPlayhead) {
-    rational playhead_abs_time = GetTime();
-    qreal playhead_pos = TimeToScene(playhead_abs_time);
-    potential_snaps.append(AttemptSnap(screen_pt, playhead_pos, start_times, playhead_abs_time));
-  }
-
-  if (snap_points & kSnapToClips) {
-    foreach (Block* b, added_blocks_) {
-      qreal rect_left = TimeToScene(b->in());
-      qreal rect_right = TimeToScene(b->out());
-
-      // Attempt snapping to clip in point
-      potential_snaps.append(AttemptSnap(screen_pt, rect_left, start_times, b->in()));
-
-      // Attempt snapping to clip out point
-      potential_snaps.append(AttemptSnap(screen_pt, rect_right, start_times, b->out()));
-    }
-  }
-
-  if ((snap_points & kSnapToMarkers)) {
-    foreach (TimelineMarker* m, GetConnectedNode()->GetTimelinePoints()->markers()->list()) {
-      qreal marker_pos = TimeToScene(m->time().in());
-      potential_snaps.append(AttemptSnap(screen_pt, marker_pos, start_times, m->time().in()));
-
-      if (m->time().in() != m->time().out()) {
-        marker_pos = TimeToScene(m->time().out());
-        potential_snaps.append(AttemptSnap(screen_pt, marker_pos, start_times, m->time().out()));
-      }
-    }
-  }
-
-  if (potential_snaps.isEmpty()) {
-    HideSnaps();
-    return false;
-  }
-
-  int closest_snap = 0;
-  rational closest_diff = qAbs(potential_snaps.at(0).movement - *movement);
-
-  // Determine which snap point was the closest
-  for (int i=1; i<potential_snaps.size(); i++) {
-    rational this_diff = qAbs(potential_snaps.at(i).movement - *movement);
-
-    if (this_diff < closest_diff) {
-      closest_snap = i;
-      closest_diff = this_diff;
-    }
-  }
-
-  *movement = potential_snaps.at(closest_snap).movement;
-
-  // Find all points at this movement
-  QVector<rational> snap_times;
-  foreach (const SnapData& d, potential_snaps) {
-    if (d.movement == *movement) {
-      snap_times.append(d.time);
-    }
-  }
-
-  ShowSnap(snap_times);
-
-  return true;
 }
 
 void TimelineWidget::SetSplitterSizesCommand::redo()

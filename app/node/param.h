@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -52,11 +52,6 @@ public:
     f_ = flags;
   }
 
-  bool operator&(const InputFlag& f) const
-  {
-    return f_ & f;
-  }
-
   InputFlags operator|(const InputFlags &f) const
   {
     InputFlags i = *this;
@@ -68,6 +63,62 @@ public:
   {
     f_ |= f.f_;
     return *this;
+  }
+
+  InputFlags operator|(const InputFlag &f) const
+  {
+    InputFlags i = *this;
+    i |= f;
+    return i;
+  }
+
+  InputFlags &operator|=(const InputFlag &f)
+  {
+    f_ |= f;
+    return *this;
+  }
+
+  InputFlags operator&(const InputFlags &f) const
+  {
+    InputFlags i = *this;
+    i &= f;
+    return i;
+  }
+
+  InputFlags &operator&=(const InputFlags &f)
+  {
+    f_ &= f.f_;
+    return *this;
+  }
+
+  InputFlags operator&(const InputFlag &f) const
+  {
+    InputFlags i = *this;
+    i &= f;
+    return i;
+  }
+
+  InputFlags &operator&=(const InputFlag &f)
+  {
+    f_ &= f;
+    return *this;
+  }
+
+  InputFlags operator~() const
+  {
+    InputFlags i = *this;
+    i.f_ = ~i.f_;
+    return i;
+  }
+
+  inline operator bool() const
+  {
+    return f_;
+  }
+
+  inline const uint64_t &value() const
+  {
+    return f_;
   }
 
 private:
@@ -188,6 +239,7 @@ public:
   QStringList GetComboBoxStrings() const;
 
   QVariant GetProperty(const QString& key) const;
+  QHash<QString, QVariant> GetProperties() const;
 
   QVariant GetValueAtTime(const rational& time) const;
 

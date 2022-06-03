@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -145,15 +145,42 @@ SpeedDurationDialog::SpeedDurationDialog(const QVector<ClipBlock *> &clips, cons
 
 void SpeedDurationDialog::accept()
 {
-  // We haven't implemented rippling yet, so warn the user
-  if (ripple_box_->isChecked()) {
-    // FIXME: Stub
-    if (QMessageBox::information(this, QString(), tr("Rippling is a stub and will not do anything. Do you wish to continue?"), QMessageBox::Yes | QMessageBox::No) == QMessageBox::No) {
-      return;
+  MultiUndoCommand *command = new MultiUndoCommand();
+
+  // Set duration values
+  TimelineRippleDeleteGapsAtRegionsCommand::RangeList ripple_ranges;
+
+  foreach (ClipBlock *c, clips_) {
+    rational proposed_length = c->length();
+
+    if (dur_slider_->IsTristate()) {
+      if (link_box_->isChecked() && !speed_slider_->IsTristate()) {
+        proposed_length = GetLengthAdjustment(c->length(), c->speed(), speed_slider_->GetValue(), timebase_);
+      }
+    } else {
+      proposed_length = dur_slider_->GetValue();
+    }
+
+    if (proposed_length != c->length()) {
+      // Clip length should ideally change, but check if there's "room" to do so
+      if (proposed_length > c->length() && c->next()) {
+        if (GapBlock *gap = dynamic_cast<GapBlock*>(c->next())) {
+          proposed_length = qMin(proposed_length, gap->out() - c->in());
+        } else {
+          proposed_length = c->length();
+        }
+      }
+
+      if (proposed_length != c->length()) {
+        command->add_child(new BlockTrimCommand(c->track(), c, proposed_length, Timeline::kTrimOut));
+        ripple_ranges.append({c->track(), TimeRange(c->in() + proposed_length, c->out())});
+      }
     }
   }
 
-  MultiUndoCommand *command = new MultiUndoCommand();
+  if (ripple_box_->isChecked()) {
+    command->add_child(new TimelineRippleDeleteGapsAtRegionsCommand(clips_.first()->track()->sequence(), ripple_ranges));
+  }
 
   // Set speed values
   if (speed_slider_->IsTristate()) {
@@ -181,34 +208,6 @@ void SpeedDurationDialog::accept()
   if (!maintain_audio_pitch_box_->isTristate()) {
     foreach (ClipBlock *c, clips_) {
       command->add_child(new NodeParamSetStandardValueCommand(NodeKeyframeTrackReference(NodeInput(c, ClipBlock::kMaintainAudioPitchInput)), maintain_audio_pitch_box_->isChecked()));
-    }
-  }
-
-  // Set duration values
-  foreach (ClipBlock *c, clips_) {
-    rational proposed_length = c->length();
-
-    if (dur_slider_->IsTristate()) {
-      if (link_box_->isChecked() && !speed_slider_->IsTristate()) {
-        proposed_length = GetLengthAdjustment(c->length(), c->speed(), speed_slider_->GetValue(), timebase_);
-      }
-    } else {
-      proposed_length = dur_slider_->GetValue();
-    }
-
-    if (proposed_length != c->length()) {
-      // Clip length should ideally change, but check if there's "room" to do so
-      if (proposed_length > c->length() && c->next()) {
-        if (GapBlock *gap = dynamic_cast<GapBlock*>(c->next())) {
-          proposed_length = qMin(proposed_length, gap->out() - c->in());
-        } else {
-          proposed_length = c->length();
-        }
-      }
-
-      if (proposed_length != c->length()) {
-        command->add_child(new BlockTrimCommand(c->track(), c, proposed_length, Timeline::kTrimOut));
-      }
     }
   }
 

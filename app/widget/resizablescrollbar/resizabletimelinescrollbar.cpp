@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,6 +24,8 @@
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QtMath>
+
+#include "ui/colorcoding.h"
 
 namespace olive {
 
@@ -48,6 +50,7 @@ void ResizableTimelineScrollBar::ConnectTimelinePoints(TimelinePoints *points)
     disconnect(points_->workarea(), &TimelineWorkArea::EnabledChanged, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
     disconnect(points_->markers(), &TimelineMarkerList::MarkerAdded, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
     disconnect(points_->markers(), &TimelineMarkerList::MarkerRemoved, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
+    disconnect(points_->markers(), &TimelineMarkerList::MarkerModified, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
   }
 
   points_ = points;
@@ -57,6 +60,7 @@ void ResizableTimelineScrollBar::ConnectTimelinePoints(TimelinePoints *points)
     connect(points_->workarea(), &TimelineWorkArea::EnabledChanged, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
     connect(points_->markers(), &TimelineMarkerList::MarkerAdded, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
     connect(points_->markers(), &TimelineMarkerList::MarkerRemoved, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
+    connect(points_->markers(), &TimelineMarkerList::MarkerModified, this, static_cast<void (ResizableTimelineScrollBar::*)()>(&ResizableTimelineScrollBar::update));
   }
 
   update();
@@ -75,7 +79,7 @@ void ResizableTimelineScrollBar::paintEvent(QPaintEvent *event)
 
   if (points_
       && !timebase().isNull()
-      && (points_->workarea()->enabled() || !points_->markers()->list().isEmpty())) {
+      && (points_->workarea()->enabled() || !points_->markers()->empty())) {
     QStyleOptionSlider opt;
     initStyleOption(&opt);
 
@@ -108,9 +112,11 @@ void ResizableTimelineScrollBar::paintEvent(QPaintEvent *event)
                  workarea_color);
     }
 
-    if (!points_->markers()->list().isEmpty()) {
-      QColor marker_color(0, 255, 0, 128);
-      foreach (TimelineMarker* marker, points_->markers()->list()) {
+    if (!points_->markers()->empty()) {
+      for (auto it=points_->markers()->cbegin(); it!=points_->markers()->cend(); it++) {
+        TimelineMarker* marker = *it;
+
+        QColor marker_color = ColorCoding::GetColor(marker->color()).toQColor();
         int64_t in = qRound64(ratio * TimeToScene(marker->time().in()));
         int64_t out = qRound64(ratio * TimeToScene(marker->time().out()));
         int64_t length = qMax(int64_t(1), out-in);

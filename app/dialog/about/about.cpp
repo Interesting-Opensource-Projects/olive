@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -132,7 +132,7 @@ AboutDialog::AboutDialog(bool welcome_dialog, QWidget *parent) :
 void AboutDialog::accept()
 {
   if (dont_show_again_checkbox_ && dont_show_again_checkbox_->isChecked()) {
-    Config::Current()[QStringLiteral("ShowWelcomeDialog")] = false;
+    OLIVE_CONFIG("ShowWelcomeDialog") = false;
   }
 
   QDialog::accept();

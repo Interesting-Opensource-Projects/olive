@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -187,7 +187,7 @@ private slots:
 
   void StatusBarDoubleClicked();
 
-  void NodeGroupRequested(NodeGroup *group);
+  void NodePanelGroupOpenedOrClosed();
 
 #ifdef Q_OS_LINUX
   void ShowNouveauWarning();
@@ -196,6 +196,8 @@ private slots:
   void TimelinePanelSelectionChanged(const QVector<Block*> &blocks);
 
   void ShowWelcomeDialog();
+
+  void RevealViewerInProject(ViewerOutput *r);
 
 };
 
