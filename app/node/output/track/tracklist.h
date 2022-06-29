@@ -102,6 +102,8 @@ signals:
 
   void TrackRemoved(Track* track);
 
+  void TrackHeightChanged(Track *track, int height);
+
 private:
   void UpdateTrackIndexesFrom(int index);
 

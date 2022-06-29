@@ -63,7 +63,6 @@ FFmpegDecoder::FFmpegDecoder() :
   native_output_pix_fmt_(VideoParams::kFormatInvalid),
   working_frame_(nullptr),
   working_packet_(nullptr),
-  is_working_(false),
   cache_at_zero_(false),
   cache_at_eof_(false)
 {
@@ -750,7 +749,7 @@ AVFramePtr FFmpegDecoder::RetrieveFrame(const rational& time, const QAtomicInt *
   int64_t target_ts = GetTimeInTimebaseUnits(time, instance_.avstream()->time_base, instance_.avstream()->start_time);
 
   const int64_t min_seek = -instance_.avstream()->start_time;
-  int64_t seek_ts = target_ts;
+  int64_t seek_ts = std::max(min_seek, target_ts - MaximumQueueSize());
   bool still_seeking = false;
 
   if (time != kAnyTimecode) {
@@ -839,7 +838,7 @@ AVFramePtr FFmpegDecoder::RetrieveFrame(const rational& time, const QAtomicInt *
     } else {
 
       // Cut down to thread count - 1 before we acquire a new frame
-      if (cached_frames_.size() == size_t(QThread::idealThreadCount())) {
+      if (cached_frames_.size() > size_t(MaximumQueueSize())) {
         RemoveFirstFrame();
       }
 
@@ -1038,6 +1037,15 @@ void FFmpegDecoder::RemoveFirstFrame()
 {
   cached_frames_.pop_front();
   cache_at_zero_ = false;
+}
+
+int FFmpegDecoder::MaximumQueueSize()
+{
+  // Fairly arbitrary size. This used to need to be the number of current threads to ensure any
+  // thread that arrived would have its frame available, but if we only have one render thread,
+  // that's no longer a concern. Now, this value could technically be 1, but some memory cache
+  // may be useful for reversing. This value may be tweaked over time.
+  return 2;
 }
 
 FFmpegDecoder::Instance::Instance() :

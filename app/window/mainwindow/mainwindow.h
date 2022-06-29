@@ -198,6 +198,7 @@ private slots:
   void ShowWelcomeDialog();
 
   void RevealViewerInProject(ViewerOutput *r);
+  void RevealViewerInFootageViewer(ViewerOutput *r, const TimeRange &range);
 
 };
 
