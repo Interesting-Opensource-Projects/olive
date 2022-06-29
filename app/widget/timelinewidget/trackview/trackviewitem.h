@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@
 #include "node/output/track/track.h"
 #include "widget/clickablelabel/clickablelabel.h"
 #include "widget/focusablelineedit/focusablelineedit.h"
+#include "widget/timelinewidget/view/timelineviewmouseevent.h"
 
 namespace olive {
 
@@ -38,8 +39,11 @@ public:
   TrackViewItem(Track* track,
                 QWidget* parent = nullptr);
 
+signals:
+  void AboutToDeleteTrack(Track *track);
+
 private:
-  QPushButton* CreateMSLButton(const QString &text, const QColor &checked_color) const;
+  QPushButton* CreateMSLButton(const QColor &checked_color) const;
 
   QStackedWidget* stack_;
 
@@ -66,6 +70,10 @@ private slots:
   void DeleteTrack();
 
   void DeleteAllEmptyTracks();
+
+  void UpdateMuteButton(bool e);
+
+  void UpdateLockButton(bool e);
 
 };
 

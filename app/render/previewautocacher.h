@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@
 #include "node/project/project.h"
 #include "render/audioparams.h"
 #include "render/renderjobtracker.h"
-#include "threading/threadticketwatcher.h"
+#include "render/rendermanager.h"
 
 namespace olive {
 
@@ -49,9 +49,9 @@ public:
 
   virtual ~PreviewAutoCacher() override;
 
-  RenderTicketPtr GetSingleFrame(const rational& t, bool prioritize);
+  RenderTicketPtr GetSingleFrame(const rational& t);
 
-  RenderTicketPtr GetRangeOfAudio(TimeRange range, bool prioritize);
+  RenderTicketPtr GetRangeOfAudio(TimeRange range);
 
   /**
    * @brief Set the viewer node to auto-cache
@@ -71,18 +71,6 @@ public:
    * @brief Updates the range of frames to auto-cache
    */
   void SetPlayhead(const rational& playhead);
-
-  /**
-   * @brief If any hashes are currently running, wait for them to finish
-   *
-   * Once this function returns, it can be guaranteed that all hash tasks have been finished.
-   * They will NOT have been removed from the hash task list yet until they run HashesProcessed.
-   * If you don't want the continued processing in HashesProcessed to run, remove the task manually
-   * from the list after calling this function. It will still call HashesProcessed, but will be
-   * largely ignored (that function will simply free it).
-   */
-  void WaitForHashesToFinish();
-  void WaitForVideoDownloadsToFinish();
 
   /**
    * @brief Call cancel on all currently running video tasks
@@ -110,8 +98,17 @@ signals:
 private:
   void TryRender();
 
-  RenderTicketWatcher *RenderFrame(const QByteArray& hash, const rational &time, bool prioritize, bool texture_only);
-  RenderTicketPtr RenderAudio(const TimeRange &range, bool generate_waveforms, bool prioritize);
+  RenderTicketWatcher *RenderFrame(Node *node, const rational &time, FrameHashCache *cache);
+  RenderTicketWatcher *RenderFrame(const rational &time, FrameHashCache *cache)
+  {
+    return RenderFrame(copied_viewer_node_->GetConnectedTextureOutput(), time, cache);
+  }
+
+  RenderTicketPtr RenderAudio(Node *node, const TimeRange &range, bool generate_waveforms);
+  RenderTicketPtr RenderAudio(const TimeRange &range, bool generate_waveforms)
+  {
+    return RenderAudio(copied_viewer_node_->GetConnectedSampleOutput(), range, generate_waveforms);
+  }
 
   /**
    * @brief Process all changes to internal NodeGraph copy
@@ -130,6 +127,9 @@ private:
 
   void InsertIntoCopyMap(Node* node, Node* copy);
 
+  void ConnectToNodeCache(Node *node);
+  void DisconnectFromNodeCache(Node *node);
+
   void UpdateGraphChangeValue();
   void UpdateLastSyncedValue();
 
@@ -141,14 +141,6 @@ private:
   void StartCachingRange(const TimeRange &range, TimeRangeList *range_list, RenderJobTracker *tracker);
   void StartCachingVideoRange(const TimeRange &range);
   void StartCachingAudioRange(const TimeRange &range);
-
-  struct HashData {
-    rational time;
-    QByteArray hash;
-    bool exists;
-  };
-
-  static QVector<HashData> GenerateHashes(ViewerOutput *viewer, FrameHashCache* cache, const QVector<rational> &times);
 
   class QueuedJob {
   public:
@@ -190,10 +182,8 @@ private:
 
   RenderTicketPtr single_frame_render_;
 
-  QList<QFutureWatcher< QVector<HashData> >*> hash_tasks_;
   QMap<RenderTicketWatcher*, TimeRange> audio_tasks_;
-  QMap<RenderTicketWatcher*, QByteArray> video_tasks_;
-  QMap<RenderTicketWatcher*, QByteArray> video_download_tasks_;
+  QMap<RenderTicketWatcher*, rational> video_tasks_;
   QMap<RenderTicketWatcher*, QVector<RenderTicketPtr> > video_immediate_passthroughs_;
 
   JobTime graph_changed_time_;
@@ -209,7 +199,6 @@ private:
   RenderJobTracker audio_job_tracker_;
 
   TimeRangeListFrameIterator queued_frame_iterator_;
-  TimeRangeListFrameIterator hash_iterator_;
   TimeRangeList audio_iterator_;
 
   static const bool kRealTimeWaveformsEnabled;
@@ -226,11 +215,6 @@ private slots:
   void AudioInvalidated(const olive::TimeRange &range);
 
   /**
-   * @brief Handler for when we have applied all the hashes to the FrameHashCache
-   */
-  void HashesProcessed();
-
-  /**
    * @brief Handler for when the RenderManager has returned rendered audio
    */
   void AudioRendered();
@@ -239,11 +223,6 @@ private slots:
    * @brief Handler for when the RenderManager has returned rendered video frames
    */
   void VideoRendered();
-
-  /**
-   * @brief Handler for when we've saved a video frame to the cache
-   */
-  void VideoDownloaded();
 
   void NodeAdded(Node* node);
 

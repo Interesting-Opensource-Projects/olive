@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,9 +27,6 @@
 
 namespace olive {
 
-class SampleBuffer;
-using SampleBufferPtr = std::shared_ptr<SampleBuffer>;
-
 /**
  * @brief A buffer of audio samples
  *
@@ -42,18 +39,18 @@ class SampleBuffer
 {
 public:
   SampleBuffer();
-
-  static SampleBufferPtr Create();
-  static SampleBufferPtr CreateAllocated(const AudioParams& audio_params, const rational& length);
-  static SampleBufferPtr CreateAllocated(const AudioParams& audio_params, int samples_per_channel);
-
-  DISABLE_COPY_MOVE(SampleBuffer)
+  SampleBuffer(const AudioParams& audio_params, const rational& length);
+  SampleBuffer(const AudioParams& audio_params, int samples_per_channel);
 
   const AudioParams& audio_params() const;
   void set_audio_params(const AudioParams& params);
 
   const int &sample_count() const;
   void set_sample_count(const int &sample_count);
+  void set_sample_count(const rational &length)
+  {
+    set_sample_count(audio_params_.time_to_samples(length));
+  }
 
   float* data(int channel)
   {
@@ -65,10 +62,16 @@ public:
     return data_.at(channel).constData();
   }
 
-  float **to_raw_ptrs()
+  QVector<float *> to_raw_ptrs()
   {
-    return raw_ptrs_.data();
+    QVector<float *> r(data_.size());
+    for (int i=0; i<r.size(); i++) {
+      r[i] = data_[i].data();
+    }
+    return r;
   }
+
+  int channel_count() const { return data_.size(); }
 
   bool is_allocated() const;
   void allocate();
@@ -81,6 +84,8 @@ public:
   void transform_volume_for_sample(int sample_index, float volume);
   void transform_volume_for_sample_on_channel(int sample_index, int channel, float volume);
 
+  void clamp();
+
   void silence();
   void silence(int start_sample, int end_sample);
   void silence_bytes(int start_byte, int end_byte);
@@ -92,19 +97,18 @@ public:
   }
 
 private:
-  void update_raw();
+  void clamp_channel(int channel);
 
   AudioParams audio_params_;
 
   int sample_count_per_channel_;
 
   QVector< QVector<float> > data_;
-  QVector<float*> raw_ptrs_;
 
 };
 
 }
 
-Q_DECLARE_METATYPE(olive::SampleBufferPtr)
+Q_DECLARE_METATYPE(olive::SampleBuffer)
 
 #endif // SAMPLEBUFFER_H

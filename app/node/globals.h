@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -30,6 +30,8 @@ namespace olive {
 class NodeGlobals
 {
 public:
+  NodeGlobals(){}
+
   NodeGlobals(const QVector2D &resolution, const rational &pixel_aspect, const TimeRange &time) :
     resolution_(resolution),
     pixel_aspect_(pixel_aspect),

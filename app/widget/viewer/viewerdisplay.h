@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,11 +21,14 @@
 #ifndef VIEWERGLWIDGET_H
 #define VIEWERGLWIDGET_H
 
-#include <QOpenGLWidget>
 #include <QMatrix4x4>
+#include <QRubberBand>
 
 #include "node/color/colormanager/colormanager.h"
+#include "node/gizmo/text.h"
 #include "node/node.h"
+#include "node/output/track/tracklist.h"
+#include "node/traverser.h"
 #include "render/color.h"
 #include "tool/tool.h"
 #include "viewerplaybacktimer.h"
@@ -72,6 +75,7 @@ public:
   void SetGizmos(Node* node);
   void SetVideoParams(const VideoParams &params);
   void SetTime(const rational& time);
+  void SetSubtitleTracks(Sequence *list);
 
   void SetShowWidgetBackground(bool e)
   {
@@ -83,7 +87,7 @@ public:
    * @brief Transform a point from viewer space to the buffer space.
    * Multiplies by the inverted transform matrix to undo the scaling and translation.
    */
-  QPoint TransformViewerSpaceToBufferSpace(QPoint pos);
+  QPointF TransformViewerSpaceToBufferSpace(const QPointF &pos);
 
   bool IsDeinterlacing() const
   {
@@ -96,6 +100,9 @@ public:
   {
     return show_fps_;
   }
+
+  bool GetShowSubtitles() const { return show_subtitles_; }
+  void SetShowSubtitles(bool e) { show_subtitles_ = e; update(); }
 
   void IncrementSkippedFrames();
 
@@ -122,6 +129,8 @@ public:
   {
     return &timer_;
   }
+
+  virtual bool eventFilter(QObject *o, QEvent *e) override;
 
 public slots:
   /**
@@ -157,12 +166,16 @@ public slots:
    */
   void UpdateCursor();
 
+  void ToolChanged();
+
   /**
    * @brief Enables/disables a basic deinterlace on the viewer
    */
   void SetDeinterlacing(bool e);
 
   void SetShowFPS(bool e);
+
+  void RequestStartEditingText();
 
 signals:
   /**
@@ -200,27 +213,9 @@ signals:
 
   void QueueStarved();
 
-protected:
-  /**
-   * @brief Override the mouse press event for the DragStarted() signal and gizmos
-   */
-  virtual void mousePressEvent(QMouseEvent* event) override;
+  void QueueNoLongerStarved();
 
-  /**
-   * @brief Override mouse move to signal for the pixel sampler and gizmos
-   */
-  virtual void mouseMoveEvent(QMouseEvent* event) override;
-
-  /**
-   * @brief Override mouse release event for gizmos
-   */
-  virtual void mouseReleaseEvent(QMouseEvent* event) override;
-
-  virtual void dragEnterEvent(QDragEnterEvent* event) override;
-
-  virtual void dragLeaveEvent(QDragLeaveEvent* event) override;
-
-  virtual void dropEvent(QDropEvent* event) override;
+  void CreateAddableAt(const QRectF &rect);
 
 protected slots:
   /**
@@ -237,7 +232,7 @@ private:
   QPointF GetTexturePosition(const QSize& size);
   QPointF GetTexturePosition(const double& x, const double& y);
 
-  static void DrawTextWithCrudeShadow(QPainter* painter, const QRect& rect, const QString& text);
+  static void DrawTextWithCrudeShadow(QPainter* painter, const QRect& rect, const QString& text, const QTextOption &opt = QTextOption());
 
   rational GetGizmoTime();
 
@@ -247,13 +242,26 @@ private:
 
   QTransform GenerateWorldTransform();
 
-  QTransform GenerateGizmoTransform();
+  QTransform GenerateDisplayTransform();
+
+  QTransform GenerateGizmoTransform(NodeTraverser &gt, const TimeRange &range);
 
   TimeRange GenerateGizmoTime()
   {
     rational node_time = GetGizmoTime();
     return TimeRange(node_time, node_time + gizmo_params_.frame_rate_as_time_base());
   }
+
+  NodeGizmo *TryGizmoPress(const NodeValueRow &row, const QPointF &p);
+
+  void OpenTextGizmo(TextGizmo *text, QMouseEvent *event = nullptr);
+
+  bool OnMousePress(QMouseEvent *e);
+  bool OnMouseMove(QMouseEvent *e);
+  bool OnMouseRelease(QMouseEvent *e);
+  bool OnMouseDoubleClick(QMouseEvent *e);
+
+  void EmitColorAtCursor(QMouseEvent* e);
 
   /**
    * @brief Internal reference to the OpenGL texture to draw. Set in SetTexture() and used in paintGL().
@@ -302,10 +310,16 @@ private:
 
   Node* gizmos_;
   NodeValueRow gizmo_db_;
-  rational gizmo_drag_time_;
   VideoParams gizmo_params_;
   QPoint gizmo_start_drag_;
-  bool gizmo_click_;
+  QPoint gizmo_last_drag_;
+  NodeGizmo *current_gizmo_;
+  bool gizmo_drag_started_;
+  QTransform gizmo_last_draw_transform_;
+  QTransform gizmo_last_draw_transform_inverted_;
+
+  bool show_subtitles_;
+  Sequence *subtitle_tracks_;
 
   rational time_;
 
@@ -330,6 +344,8 @@ private:
 
   QVariant load_frame_;
 
+  int playback_speed_;
+
   enum PushMode {
     /// New frame to push to internal texture
     kPushFrame,
@@ -353,10 +369,18 @@ private:
 
   rational playback_timebase_;
 
-private slots:
-  void EmitColorAtCursor(QMouseEvent* e);
+  QRubberBand *add_band_;
+  QPoint add_band_start_;
 
+  bool queue_starved_;
+
+private slots:
   void UpdateFromQueue();
+
+  void TextEditChanged();
+
+  void SubtitlesChanged(const TimeRange &r);
+
 
 };
 

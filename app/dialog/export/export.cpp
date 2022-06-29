@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -38,6 +38,7 @@
 #include "node/project/sequence/sequence.h"
 #include "task/taskmanager.h"
 #include "ui/icons/icons.h"
+#include "widget/timeruler/timeruler.h"
 
 namespace olive {
 
@@ -106,7 +107,7 @@ ExportDialog::ExportDialog(ViewerOutput *viewer_node, QWidget *parent) :
   range_combobox_ = new QComboBox();
   range_combobox_->addItem(tr("Entire Sequence"));
   range_combobox_->addItem(tr("In to Out"));
-  range_combobox_->setEnabled(viewer_node_->GetTimelinePoints()->workarea()->enabled());
+  range_combobox_->setEnabled(viewer_node_->GetWorkArea()->enabled());
 
   preferences_layout->addWidget(range_combobox_, row, 1, 1, 3);
 
@@ -117,7 +118,7 @@ ExportDialog::ExportDialog(ViewerOutput *viewer_node, QWidget *parent) :
   row++;
 
   preferences_layout->addWidget(new QLabel(tr("Format:")), row, 0);
-  format_combobox_ = new QComboBox();
+  format_combobox_ = new ExportFormatComboBox();
   preferences_layout->addWidget(format_combobox_, row, 1, 1, 3);
 
   row++;
@@ -192,33 +193,11 @@ ExportDialog::ExportDialog(ViewerOutput *viewer_node, QWidget *parent) :
   // Set default filename
   SetDefaultFilename();
 
-  // Populate combobox formats
-  for (int i=0; i<ExportFormat::kFormatCount; i++) {
-    QString format_name = ExportFormat::GetName(static_cast<ExportFormat::Format>(i));
-
-    bool inserted = false;
-
-    for (int j=0; j<format_combobox_->count(); j++) {
-      if (format_combobox_->itemText(j) > format_name) {
-        format_combobox_->insertItem(j, format_name, i);
-        inserted = true;
-        break;
-      }
-    }
-
-    if (!inserted) {
-      format_combobox_->addItem(format_name, i);
-    }
-  }
-
   // Set defaults
-  previously_selected_format_ = ExportFormat::kFormatMPEG4;
-  SetCurrentFormat(ExportFormat::kFormatMPEG4);
-  connect(format_combobox_,
-          static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
-          this,
-          &ExportDialog::FormatChanged);
-  FormatChanged(format_combobox_->currentIndex());
+  previously_selected_format_ = ExportFormat::kFormatMPEG4Video;
+  format_combobox_->SetFormat(ExportFormat::kFormatMPEG4Video);
+  connect(format_combobox_, &ExportFormatComboBox::FormatChanged, this, &ExportDialog::FormatChanged);
+  FormatChanged(format_combobox_->GetFormat());
 
   VideoParams vp = viewer_node_->GetVideoParams();
   AudioParams ap = viewer_node_->GetAudioParams();
@@ -229,9 +208,10 @@ ExportDialog::ExportDialog(ViewerOutput *viewer_node, QWidget *parent) :
   video_tab_->height_slider()->SetDefaultValue(vp.height());
   video_tab_->SetSelectedFrameRate(vp.frame_rate());
   video_tab_->pixel_aspect_combobox()->SetPixelAspectRatio(vp.pixel_aspect_ratio());
-  video_tab_->pixel_format_field()->SetPixelFormat(static_cast<VideoParams::Format>(Config::Current()[QStringLiteral("OnlinePixelFormat")].toInt()));
+  video_tab_->pixel_format_field()->SetPixelFormat(static_cast<VideoParams::Format>(OLIVE_CONFIG("OnlinePixelFormat").toInt()));
   video_tab_->interlaced_combobox()->SetInterlaceMode(vp.interlacing());
   audio_tab_->sample_rate_combobox()->SetSampleRate(ap.sample_rate());
+  audio_tab_->sample_format_combobox()->SetAttemptToRestoreFormat(false);
   audio_tab_->channel_layout_combobox()->SetChannelLayout(ap.channel_layout());
 
   video_aspect_ratio_ = static_cast<double>(vp.width()) / static_cast<double>(vp.height());
@@ -267,14 +247,8 @@ ExportDialog::ExportDialog(ViewerOutput *viewer_node, QWidget *parent) :
 
   // Set viewer to view the node
   preview_viewer_->ConnectViewerNode(viewer_node_);
-  preview_viewer_->ruler()->ConnectTimelinePoints(viewer_node_->GetTimelinePoints());
   preview_viewer_->SetColorMenuEnabled(false);
   preview_viewer_->SetColorTransform(video_tab_->CurrentOCIOColorSpace());
-}
-
-ExportFormat::Format ExportDialog::GetSelectedFormat() const
-{
-  return static_cast<ExportFormat::Format>(format_combobox_->currentData().toInt());
 }
 
 rational ExportDialog::GetSelectedTimebase() const
@@ -292,7 +266,7 @@ void ExportDialog::StartExport()
 
   // Validate if the entered filename contains the correct extension (the extension is necessary
   // for both FFmpeg and OIIO to determine the output format)
-  QString necessary_ext = QStringLiteral(".%1").arg(ExportFormat::GetExtension(GetSelectedFormat()));
+  QString necessary_ext = QStringLiteral(".%1").arg(ExportFormat::GetExtension(format_combobox_->GetFormat()));
   QString proposed_filename = filename_edit_->text().trimmed();
 
   // If it doesn't, see if the user wants to append it automatically. If not, we don't abort the export.
@@ -312,7 +286,8 @@ void ExportDialog::StartExport()
   QFileInfo dir_info(file_info.path());
 
   // If the directory does not exist, try to create it
-  if (!QDir(file_info.path()).mkpath(QStringLiteral("."))) {
+  QDir dest_dir(file_info.path());
+  if (!FileFunctions::DirectoryIsValid(dest_dir)) {
     QtUtils::MessageBox(this, QMessageBox::Critical, tr("Failed to create output directory"),
                         tr("The intended output directory doesn't exist and Olive couldn't create it. "
                                          "Please choose a different filename."));
@@ -426,7 +401,7 @@ void ExportDialog::AddPreferencesTab(QWidget *inner_widget, const QString &title
 
 void ExportDialog::BrowseFilename()
 {
-  ExportFormat::Format f = GetSelectedFormat();
+  ExportFormat::Format f = format_combobox_->GetFormat();
 
   QString browsed_fn = QFileDialog::getSaveFileName(this,
                                                     "",
@@ -442,11 +417,10 @@ void ExportDialog::BrowseFilename()
   }
 }
 
-void ExportDialog::FormatChanged(int index)
+void ExportDialog::FormatChanged(ExportFormat::Format current_format)
 {
   QString current_filename = filename_edit_->text().trimmed();
   QString previously_selected_ext = ExportFormat::GetExtension(previously_selected_format_);
-  ExportFormat::Format current_format = static_cast<ExportFormat::Format>(format_combobox_->itemData(index).toInt());
   QString currently_selected_ext = ExportFormat::GetExtension(current_format);
 
   // If the previous extension was added, remove it
@@ -539,22 +513,22 @@ ExportParams ExportDialog::GenerateParams() const
                                   video_tab_->interlaced_combobox()->GetInterlaceMode(),
                                   1);
 
-  AudioParams audio_render_params(audio_tab_->sample_rate_combobox()->currentData().toInt(),
+  AudioParams audio_render_params(audio_tab_->sample_rate_combobox()->GetSampleRate(),
                                   audio_tab_->channel_layout_combobox()->GetChannelLayout(),
-                                  AudioParams::kInternalFormat);
+                                  audio_tab_->sample_format_combobox()->GetSampleFormat());
 
   ExportParams params;
-  params.set_encoder(Encoder::GetTypeFromFormat(GetSelectedFormat()));
+  params.set_encoder(Encoder::GetTypeFromFormat(format_combobox_->GetFormat()));
   params.SetFilename(filename_edit_->text().trimmed());
   params.SetExportLength(viewer_node_->GetLength());
 
   if (ExportCodec::IsCodecAStillImage(video_tab_->GetSelectedCodec()) && !video_tab_->IsImageSequenceSet()) {
     // Exporting as image without exporting image sequence, only export one frame
     rational export_time = video_tab_->GetStillImageTime();
-    params.set_custom_range(TimeRange(export_time, export_time));
+    params.set_custom_range(TimeRange(export_time, export_time + GetSelectedTimebase()));
   } else if (range_combobox_->currentIndex() == kRangeInToOut) {
     // Assume if this combobox is enabled, workarea is enabled - a check that we make in this dialog's constructor
-    params.set_custom_range(viewer_node_->GetTimelinePoints()->workarea()->range());
+    params.set_custom_range(viewer_node_->GetWorkArea()->range());
   }
 
   if (video_tab_->scaling_method_combobox()->isEnabled()) {
@@ -579,7 +553,7 @@ ExportParams ExportDialog::GenerateParams() const
   }
 
   if (audio_enabled_->isChecked()) {
-    ExportCodec::Codec audio_codec = static_cast<ExportCodec::Codec>(audio_tab_->codec_combobox()->currentData().toInt());
+    ExportCodec::Codec audio_codec = audio_tab_->GetCodec();
     params.EnableAudio(audio_render_params, audio_codec);
 
     params.set_audio_bit_rate(audio_tab_->bit_rate_slider()->GetValue() * 1000);
@@ -592,20 +566,10 @@ ExportParams ExportDialog::GenerateParams() const
   return params;
 }
 
-void ExportDialog::SetCurrentFormat(ExportFormat::Format format)
-{
-  for (int i=0; i<format_combobox_->count(); i++) {
-    if (format_combobox_->itemData(i).toInt() == format) {
-      format_combobox_->setCurrentIndex(i);
-      break;
-    }
-  }
-}
-
 rational ExportDialog::GetExportLength() const
 {
   if (range_combobox_->currentIndex() == kRangeInToOut) {
-    return viewer_node_->GetTimelinePoints()->workarea()->range().length();
+    return viewer_node_->GetWorkArea()->range().length();
   } else {
     return viewer_node_->GetLength();
   }

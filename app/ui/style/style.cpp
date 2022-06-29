@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -37,19 +37,6 @@ const char* StyleManager::kDefaultStyle = "olive-dark";
 QString StyleManager::current_style_;
 QMap<QString, QString> StyleManager::available_themes_;
 QPalette StyleManager::platform_palette_;
-
-void StyleManager::UseOSNativeStyling(QWidget *widget)
-{
-#if defined(Q_OS_WINDOWS)
-  QStyle* s = QStyleFactory::create(QStringLiteral("windowsvista"));
-  widget->setStyle(s);
-  widget->setPalette(platform_palette_);
-#elif defined(Q_OS_MAC)
-  QStyle* s = QStyleFactory::create(QStringLiteral("macintosh"));
-  widget->setStyle(s);
-  widget->setPalette(platform_palette_);
-#endif
-}
 
 QPalette StyleManager::ParsePalette(const QString& ini_path)
 {
@@ -149,7 +136,7 @@ void StyleManager::Init()
   available_themes_.insert(QStringLiteral("olive-dark"), QStringLiteral("Olive Dark"));
   available_themes_.insert(QStringLiteral("olive-light"), QStringLiteral("Olive Light"));
 
-  QString config_style = Config::Current()["Style"].toString();
+  QString config_style = OLIVE_CONFIG("Style").toString();
 
   if (config_style.isEmpty() || !available_themes_.contains(config_style)) {
     SetStyle(kDefaultStyle);

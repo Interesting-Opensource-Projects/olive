@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -54,11 +54,15 @@ public:
 
   static QFrame* CreateHorizontalLine();
 
+  static QFrame* CreateVerticalLine();
+
   static int MessageBox(QWidget *parent, QMessageBox::Icon icon, const QString& title, const QString& message, QMessageBox::StandardButtons buttons = QMessageBox::Ok);
 
   static QDateTime GetCreationDate(const QFileInfo &info);
 
   static QString GetFormattedDateTime(const QDateTime &dt);
+
+  static QStringList WordWrapString(const QString &s, const QFontMetrics &fm, int bounding_width);
 
 };
 

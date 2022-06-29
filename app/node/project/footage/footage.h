@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,7 +29,6 @@
 #include "node/output/viewer/viewer.h"
 #include "render/audioparams.h"
 #include "render/videoparams.h"
-#include "timeline/timelinepoints.h"
 
 namespace olive {
 
@@ -55,12 +54,7 @@ public:
    */
   Footage(const QString& filename = QString());
 
-  NODE_DEFAULT_DESTRUCTOR(Footage)
-
-  virtual Node* copy() const override
-  {
-    return new Footage();
-  }
+  NODE_DEFAULT_FUNCTIONS(Footage)
 
   virtual QString Name() const override
   {
@@ -178,6 +172,7 @@ public:
 
   static QString DescribeVideoStream(const VideoParams& params);
   static QString DescribeAudioStream(const AudioParams& params);
+  static QString DescribeSubtitleStream(const SubtitleParams& params);
 
   virtual void Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const override;
 
@@ -189,6 +184,8 @@ public:
 
   static rational AdjustTimeByLoopMode(rational time, LoopMode loop_mode, const rational& length, VideoParams::Type type, const rational &timebase);
 
+  virtual void LoadFinishedEvent() override;
+
   virtual qint64 creation_time() const override;
   virtual qint64 mod_time() const override;
 
@@ -199,8 +196,6 @@ protected:
   virtual void InputValueChangedEvent(const QString &input, int element) override;
 
   virtual rational VerifyLengthInternal(Track::Type type) const override;
-
-  virtual void Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams& video_params) const override;
 
 private:
   QString GetColorspaceToUse(const VideoParams& params) const;
@@ -220,6 +215,10 @@ private:
    * basic information about the Footage in the tooltip (based on the results of a previous probe).
    */
   void UpdateTooltip();
+
+  void Reprobe();
+
+  VideoParams MergeVideoStream(const VideoParams &base, const VideoParams &over);
 
   /**
    * @brief Internal timestamp object

@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -137,6 +137,13 @@ void MenuShared::AddItemsForEditMenu(Menu *m, bool for_clips)
     m->addAction(edit_ripple_delete_item_);
     m->addAction(edit_split_item_);
     m->addAction(edit_speedduration_item_);
+
+    m->addSeparator();
+
+    m->addAction(clip_add_default_transition_item_);
+    m->addAction(clip_link_unlink_item_);
+    m->addAction(clip_enable_disable_item_);
+    m->addAction(clip_nest_item_);
   }
 }
 
@@ -284,7 +291,7 @@ void MenuShared::NestTriggered()
 
 void MenuShared::DefaultTransitionTriggered()
 {
-  qDebug() << "FIXME: Stub";
+  PanelManager::instance()->MostRecentlyFocused<TimelinePanel>()->AddDefaultTransitionsToSelected();
 }
 
 void MenuShared::TimecodeDisplayTriggered()

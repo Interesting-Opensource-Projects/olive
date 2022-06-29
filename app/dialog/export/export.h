@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@
 
 #include "codec/exportcodec.h"
 #include "codec/exportformat.h"
+#include "dialog/export/exportformatcombobox.h"
 #include "exportaudiotab.h"
 #include "exportsubtitlestab.h"
 #include "exportvideotab.h"
@@ -43,9 +44,15 @@ class ExportDialog : public QDialog
 public:
   ExportDialog(ViewerOutput* viewer_node, QWidget* parent = nullptr);
 
-  ExportFormat::Format GetSelectedFormat() const;
-
   rational GetSelectedTimebase() const;
+
+  void SetTime(const rational &time)
+  {
+    preview_viewer_->SetAudioScrubbingEnabled(false);
+    preview_viewer_->SetTime(time);
+    video_tab_->SetTime(time);
+    preview_viewer_->SetAudioScrubbingEnabled(true);
+  }
 
 protected:
   virtual void closeEvent(QCloseEvent *e) override;
@@ -57,8 +64,6 @@ private:
   void SetDefaultFilename();
 
   ExportParams GenerateParams() const;
-
-  void SetCurrentFormat(ExportFormat::Format format);
 
   ViewerOutput* viewer_node_;
 
@@ -82,7 +87,7 @@ private:
 
   ViewerWidget* preview_viewer_;
   QLineEdit* filename_edit_;
-  QComboBox* format_combobox_;
+  ExportFormatComboBox* format_combobox_;
 
   ExportVideoTab* video_tab_;
   ExportAudioTab* audio_tab_;
@@ -98,7 +103,7 @@ private:
 private slots:
   void BrowseFilename();
 
-  void FormatChanged(int index);
+  void FormatChanged(ExportFormat::Format current_format);
 
   void ResolutionChanged();
 

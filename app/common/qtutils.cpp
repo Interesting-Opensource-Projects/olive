@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -38,6 +38,13 @@ QFrame *QtUtils::CreateHorizontalLine()
   return horizontal_line;
 }
 
+QFrame *QtUtils::CreateVerticalLine()
+{
+  QFrame *l = CreateHorizontalLine();
+  l->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
+  return l;
+}
+
 int QtUtils::MessageBox(QWidget *parent, QMessageBox::Icon icon, const QString &title, const QString &message, QMessageBox::StandardButtons buttons)
 {
   QMessageBox b(parent);
@@ -63,13 +70,53 @@ QDateTime QtUtils::GetCreationDate(const QFileInfo &info)
 #if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
   return info.created();
 #else
-  return info.birthTime();
+  QDateTime t = info.birthTime();
+  if (!t.isValid()) {
+    t = info.metadataChangeTime();
+  }
+  return t;
 #endif
 }
 
 QString QtUtils::GetFormattedDateTime(const QDateTime &dt)
 {
   return dt.toString(Qt::TextDate);
+}
+
+QStringList QtUtils::WordWrapString(const QString &s, const QFontMetrics &fm, int bounding_width)
+{
+  QStringList list;
+
+  QStringList lines = s.split('\n');
+
+  // Iterate every line
+  for (int i=0; i<lines.size(); i++) {
+    QString this_line = lines.at(i);
+
+    while (this_line.size() > 1 && QFontMetricsWidth(fm, this_line) >= bounding_width) {
+      for (int j=this_line.size()-1; j>=0; j--) {
+        if (this_line.at(j).isSpace()) {
+          QString chopped = this_line.left(j);
+          if (QFontMetricsWidth(fm, chopped) < bounding_width) {
+            list.append(chopped);
+
+            int k = j+1;
+            while (k < this_line.size() && this_line.at(k).isSpace()) {
+              k++;
+            }
+            this_line.remove(0, k);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!this_line.isEmpty()) {
+      list.append(this_line);
+    }
+  }
+
+  return list;
 }
 
 }

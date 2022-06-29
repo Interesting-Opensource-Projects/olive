@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@
 namespace olive {
 
 #define TIMELINE_TEST_START \
+  ColorManager::SetUpDefaultConfig(); \
   Project project; \
   Sequence sequence; \
   sequence.setParent(&project)

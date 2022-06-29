@@ -1,5 +1,5 @@
 # Olive - Non-Linear Video Editor
-# Copyright (C) 2021 Olive Team
+# Copyright (C) 2022 Olive Team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,9 +16,11 @@
 
 set(OLIVE_SOURCES
   ${OLIVE_SOURCES}
-  node/generator/text/text.cpp
-  node/generator/text/text.h
-  node/generator/text/textlegacy.cpp
-  node/generator/text/textlegacy.h
+  node/generator/text/textv1.cpp
+  node/generator/text/textv1.h
+  node/generator/text/textv2.cpp
+  node/generator/text/textv2.h
+  node/generator/text/textv3.cpp
+  node/generator/text/textv3.h
   PARENT_SCOPE
 )

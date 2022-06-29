@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@ extern "C" {
 #include "codec/frame.h"
 #include "codec/samplebuffer.h"
 #include "common/rational.h"
+#include "node/block/block.h"
 #include "node/project/footage/footage.h"
 #include "node/project/footage/footagedescription.h"
 #include "task/task.h"
@@ -85,13 +86,15 @@ public:
   {
   public:
     CodecStream() :
-      stream_(-1)
+      stream_(-1),
+      block_(nullptr)
     {
     }
 
-    CodecStream(const QString& filename, int stream) :
+    CodecStream(const QString& filename, int stream, Block *block) :
       filename_(filename),
-      stream_(stream)
+      stream_(stream),
+      block_(block)
     {
     }
 
@@ -125,10 +128,17 @@ public:
       return stream_;
     }
 
+    Block *block() const
+    {
+      return block_;
+    }
+
   private:
     QString filename_;
 
     int stream_;
+
+    Block *block_;
 
   };
 
@@ -150,13 +160,11 @@ public:
     RetrieveVideoParams()
     {
       divider = 1;
-      src_interlacing = VideoParams::kInterlaceNone;
-      dst_interlacing = VideoParams::kInterlaceNone;
+      maximum_format = VideoParams::kFormatInvalid;
     }
 
     int divider;
-    VideoParams::Interlacing src_interlacing;
-    VideoParams::Interlacing dst_interlacing;
+    VideoParams::Format maximum_format;
 
     void reset()
     {
@@ -165,7 +173,7 @@ public:
 
     bool operator==(const RetrieveVideoParams& rhs) const
     {
-      return divider == rhs.divider && src_interlacing == rhs.src_interlacing && dst_interlacing == rhs.dst_interlacing;
+      return divider == rhs.divider && maximum_format == rhs.maximum_format;
     }
 
     bool operator!=(const RetrieveVideoParams& rhs) const
@@ -184,18 +192,13 @@ public:
    *
    * This function is thread safe and can only run while the decoder is open. \see Open()
    */
-  FramePtr RetrieveVideo(const rational& timecode, const RetrieveVideoParams& divider, const QAtomicInt *cancelled = nullptr);
+  TexturePtr RetrieveVideo(Renderer *renderer, const rational& timecode, const RetrieveVideoParams& params, const QAtomicInt *cancelled = nullptr);
 
   enum RetrieveAudioStatus {
     kInvalid = -1,
     kOK,
-    kWaitingForConform
-  };
-
-  struct RetrieveAudioData {
-    RetrieveAudioStatus status;
-    SampleBufferPtr samples;
-    Task *task;
+    kWaitingForConform,
+    kUnknownError
   };
 
   /**
@@ -206,7 +209,7 @@ public:
    *
    * This function is thread safe and can only run while the decoder is open. \see Open()
    */
-  RetrieveAudioData RetrieveAudio(const TimeRange& range, const AudioParams& params, const QString &cache_path, Footage::LoopMode loop_mode, RenderMode::Mode mode);
+  RetrieveAudioStatus RetrieveAudio(SampleBuffer &dest, const TimeRange& range, const AudioParams& params, const QString &cache_path, Footage::LoopMode loop_mode, RenderMode::Mode mode);
 
   /**
    * @brief Determine the last time this decoder instance was used in any way
@@ -284,7 +287,7 @@ protected:
    * Sub-classes must override this function IF they support video. Function is already mutexed
    * so sub-classes don't need to worry about thread safety.
    */
-  virtual FramePtr RetrieveVideoInternal(const rational& timecode, const RetrieveVideoParams& divider, const QAtomicInt *cancelled);
+  virtual TexturePtr RetrieveVideoInternal(Renderer *renderer, const rational& timecode, const RetrieveVideoParams& params, const QAtomicInt *cancelled);
 
   virtual bool ConformAudioInternal(const QVector<QString>& filenames, const AudioParams &params, const QAtomicInt* cancelled);
 
@@ -301,6 +304,7 @@ protected:
   }
 
   static int64_t GetTimeInTimebaseUnits(const rational& time, const rational& timebase, int64_t start_time);
+  static rational GetTimestampInTimeUnits(int64_t time, const rational& timebase, int64_t start_time);
 
 signals:
   /**
@@ -312,7 +316,7 @@ signals:
 private:
   void UpdateLastAccessed();
 
-  SampleBufferPtr RetrieveAudioFromConform(const QVector<QString> &conform_filenames, const TimeRange &range, Footage::LoopMode loop_mode, const AudioParams &params);
+  bool RetrieveAudioFromConform(SampleBuffer &sample_buffer, const QVector<QString> &conform_filenames, const TimeRange &range, Footage::LoopMode loop_mode, const AudioParams &params);
 
   CodecStream stream_;
 

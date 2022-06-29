@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -120,6 +120,15 @@ QVariant NodeInput::GetProperty(const QString &key) const
     return node_->GetInputProperty(input_, key);
   } else {
     return QVariant();
+  }
+}
+
+QHash<QString, QVariant> NodeInput::GetProperties() const
+{
+  if (IsValid()) {
+    return node_->GetInputProperties(input_);
+  } else {
+    return QHash<QString, QVariant>();
   }
 }
 

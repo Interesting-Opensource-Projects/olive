@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -48,10 +48,15 @@ public:
 
   void SetRequestedFormat(VideoParams::Format f) { requested_format_ = f; }
 
+  const QString &GetColorspace() const { return colorspace_; }
+  void SetColorspace(const QString &s) { colorspace_ = s; }
+
 private:
   AlphaChannelSetting alpha_channel_required_;
 
   VideoParams::Format requested_format_;
+
+  QString colorspace_;
 
 };
 

@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -67,11 +67,13 @@ public:
 signals:
   void RequestSetTime(const rational& time);
 
-  void RequestSelectNode(const QVector<Node*>& node);
+  void RequestSelectNode(Node *node);
 
   void ArrayExpandedChanged(bool e);
 
   void InputCheckedChanged(const NodeInput &input, bool e);
+
+  void RequestEditTextInViewer();
 
 private:
   void CreateWidgets(QGridLayout *layout, Node* node, const QString& input, int element, int row_index);
@@ -134,6 +136,7 @@ private:
   static const int kArrayCollapseBtnColumn;
   static const int kLabelColumn;
   static const int kWidgetStartColumn;
+  static const int kMaxWidgetColumn;
 
 private slots:
   void EdgeChanged(Node *output, const NodeInput &input);
@@ -178,7 +181,19 @@ public:
 
   void SetTimebase(const rational& timebase)
   {
+    timebase_ = timebase;
+
     body_->SetTimebase(timebase);
+  }
+
+  Node *GetContext() const
+  {
+    return ctx_;
+  }
+
+  void SetContext(Node *ctx)
+  {
+    ctx_ = ctx;
   }
 
   Node* GetNode() const
@@ -203,11 +218,13 @@ public:
 signals:
   void RequestSetTime(const rational& time);
 
-  void RequestSelectNode(const QVector<Node*>& node);
+  void RequestSelectNode(Node *node);
 
   void ArrayExpandedChanged(bool e);
 
   void InputCheckedChanged(const NodeInput &input, bool e);
+
+  void RequestEditTextInViewer();
 
 protected slots:
   virtual void Retranslate() override;
@@ -217,9 +234,17 @@ private:
 
   Node* node_;
 
+  NodeParamViewCheckBoxBehavior create_checkboxes_;
+
+  Node *ctx_;
+
   rational time_;
+  rational timebase_;
 
   KeyframeView::NodeConnections keyframe_connections_;
+
+private slots:
+  void RecreateBody();
 
 };
 

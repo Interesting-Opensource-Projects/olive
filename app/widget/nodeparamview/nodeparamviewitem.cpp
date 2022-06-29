@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -40,26 +40,34 @@ const int NodeParamViewItemBody::kOptionalCheckBox = 0;
 const int NodeParamViewItemBody::kArrayCollapseBtnColumn = 1;
 const int NodeParamViewItemBody::kLabelColumn = 2;
 const int NodeParamViewItemBody::kWidgetStartColumn = 3;
+const int NodeParamViewItemBody::kMaxWidgetColumn = kArrayRemoveColumn;
 
 #define super NodeParamViewItemBase
 
 NodeParamViewItem::NodeParamViewItem(Node *node, NodeParamViewCheckBoxBehavior create_checkboxes, QWidget *parent) :
   super(parent),
-  node_(node)
+  body_(nullptr),
+  node_(node),
+  create_checkboxes_(create_checkboxes),
+  ctx_(nullptr)
 {
   node_->Retranslate();
 
   // Create and add contents widget
-  body_ = new NodeParamViewItemBody(node_, create_checkboxes);
-  connect(body_, &NodeParamViewItemBody::RequestSelectNode, this, &NodeParamViewItem::RequestSelectNode);
-  connect(body_, &NodeParamViewItemBody::RequestSetTime, this, &NodeParamViewItem::RequestSetTime);
-  connect(body_, &NodeParamViewItemBody::ArrayExpandedChanged, this, &NodeParamViewItem::ArrayExpandedChanged);
-  connect(body_, &NodeParamViewItemBody::InputCheckedChanged, this, &NodeParamViewItem::InputCheckedChanged);
-  SetBody(body_);
+  RecreateBody();
 
   connect(node_, &Node::LabelChanged, this, &NodeParamViewItem::Retranslate);
 
+  // FIXME: Implemented to pick up when an input is set to hidden or not - DEFINITELY not a fast
+  //        way of doing this, but "fine" for now.
+  connect(node_, &Node::InputFlagsChanged, this, &NodeParamViewItem::RecreateBody);
+
   setBackgroundRole(QPalette::Window);
+
+  // Connect title bar enabled checkbox
+  //title_bar()->SetEnabledCheckBoxVisible(true);
+  //title_bar()->SetEnabledCheckBoxChecked(node_->IsEnabled());
+  //connect(title_bar(), &NodeParamViewItemTitleBar::EnabledCheckBoxClicked, node_, &Node::SetEnabled);
 
   Retranslate();
 }
@@ -71,6 +79,25 @@ void NodeParamViewItem::Retranslate()
   title_bar()->SetText(GetTitleBarTextFromNode(node_));
 
   body_->Retranslate();
+}
+
+void NodeParamViewItem::RecreateBody()
+{
+  if (body_) {
+    body_->setParent(nullptr);
+    body_->deleteLater();
+  }
+
+  body_ = new NodeParamViewItemBody(node_, create_checkboxes_);
+  connect(body_, &NodeParamViewItemBody::RequestSelectNode, this, &NodeParamViewItem::RequestSelectNode);
+  connect(body_, &NodeParamViewItemBody::RequestSetTime, this, &NodeParamViewItem::RequestSetTime);
+  connect(body_, &NodeParamViewItemBody::ArrayExpandedChanged, this, &NodeParamViewItem::ArrayExpandedChanged);
+  connect(body_, &NodeParamViewItemBody::InputCheckedChanged, this, &NodeParamViewItem::InputCheckedChanged);
+  connect(body_, &NodeParamViewItemBody::RequestEditTextInViewer, this, &NodeParamViewItem::RequestEditTextInViewer);
+  body_->Retranslate();
+  body_->SetTime(time_);
+  body_->SetTimebase(timebase_);
+  SetBody(body_);
 }
 
 int NodeParamViewItem::GetElementY(const NodeInput &c) const
@@ -212,16 +239,10 @@ void NodeParamViewItemBody::CreateWidgets(QGridLayout* layout, Node *node, const
   ui_objects.widget_bridge = new NodeParamViewWidgetBridge(NodeInput(node, input, element), this);
   connect(ui_objects.widget_bridge, &NodeParamViewWidgetBridge::WidgetsRecreated, this, &NodeParamViewItemBody::ReplaceWidgets);
   connect(ui_objects.widget_bridge, &NodeParamViewWidgetBridge::ArrayWidgetDoubleClicked, this, &NodeParamViewItemBody::ToggleArrayExpanded);
+  connect(ui_objects.widget_bridge, &NodeParamViewWidgetBridge::RequestEditTextInViewer, this, &NodeParamViewItemBody::RequestEditTextInViewer);
 
   // Place widgets into layout
   PlaceWidgetsFromBridge(layout, ui_objects.widget_bridge, row);
-
-  // Add widgets for this parameter to the layout
-  for (int i=0; i<ui_objects.widget_bridge->widgets().size(); i++) {
-    QWidget* w = ui_objects.widget_bridge->widgets().at(i);
-
-    layout->addWidget(w, row, i+kWidgetStartColumn);
-  }
 
   // In case this input is a group, resolve that actual input to use for connected labels
   NodeInput resolved = NodeGroup::ResolveInput(input_ref);
@@ -355,7 +376,17 @@ void NodeParamViewItemBody::PlaceWidgetsFromBridge(QGridLayout* layout, NodePara
   for (int i=0; i<bridge->widgets().size(); i++) {
     QWidget* w = bridge->widgets().at(i);
 
-    layout->addWidget(w, row, i+kWidgetStartColumn);
+    int col = i+kWidgetStartColumn;
+
+    int colspan;
+    if (i == bridge->widgets().size()-1) {
+      // Span this widget among remaining columns
+      colspan = kMaxWidgetColumn - col;
+    } else {
+      colspan = 1;
+    }
+
+    layout->addWidget(w, row, col, 1, colspan);
   }
 }
 

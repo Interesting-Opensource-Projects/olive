@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,22 +29,31 @@
 #include "block/subtitle/subtitle.h"
 #include "block/transition/crossdissolve/crossdissolvetransition.h"
 #include "block/transition/diptocolor/diptocolortransition.h"
+#include "color/displaytransform/displaytransform.h"
+#include "color/ociogradingtransformlinear/ociogradingtransformlinear.h"
+#include "distort/cornerpin/cornerpindistortnode.h"
 #include "distort/crop/cropdistortnode.h"
 #include "distort/flip/flipdistortnode.h"
+#include "distort/mask/mask.h"
 #include "distort/transform/transformdistortnode.h"
 #include "effect/opacity/opacityeffect.h"
+#include "filter/blur/blur.h"
+#include "filter/dropshadow/dropshadowfilter.h"
+#include "filter/mosaic/mosaicfilternode.h"
+#include "filter/stroke/stroke.h"
 #include "generator/matrix/matrix.h"
 #include "generator/noise/noise.h"
 #include "generator/polygon/polygon.h"
 #include "generator/shape/shapenode.h"
 #include "generator/solid/solid.h"
-#include "generator/text/text.h"
-#include "generator/text/textlegacy.h"
-#include "filter/blur/blur.h"
-#include "filter/mosaic/mosaicfilternode.h"
-#include "filter/stroke/stroke.h"
+#include "generator/text/textv1.h"
+#include "generator/text/textv2.h"
+#include "generator/text/textv3.h"
 #include "input/time/timeinput.h"
 #include "input/value/valuenode.h"
+#include "keying/chromakey/chromakey.h"
+#include "keying/colordifferencekey/colordifferencekey.h"
+#include "keying/despill/despill.h"
 #include "math/math/math.h"
 #include "math/merge/merge.h"
 #include "math/trigonometry/trigonometry.h"
@@ -57,8 +66,8 @@
 #include "time/timeremap/timeremap.h"
 
 namespace olive {
+
 QList<Node*> NodeFactory::library_;
-QVector<int> NodeFactory::hidden_;
 
 void NodeFactory::Initialize()
 {
@@ -70,9 +79,6 @@ void NodeFactory::Initialize()
 
     library_.append(created_node);
   }
-
-  hidden_.append(kTextGeneratorLegacy);
-  hidden_.append(kGroupNode);
 }
 
 void NodeFactory::Destroy()
@@ -81,7 +87,7 @@ void NodeFactory::Destroy()
   library_.clear();
 }
 
-Menu *NodeFactory::CreateMenu(QWidget* parent, bool create_none_item, Node::CategoryID restrict_to)
+Menu *NodeFactory::CreateMenu(QWidget* parent, bool create_none_item, Node::CategoryID restrict_to, uint64_t restrict_flags)
 {
   Menu* menu = new Menu(parent);
   menu->setToolTipsVisible(true);
@@ -94,8 +100,11 @@ Menu *NodeFactory::CreateMenu(QWidget* parent, bool create_none_item, Node::Cate
       continue;
     }
 
-    if (hidden_.contains(i)) {
-      // Skip this node
+    if (restrict_flags && !(n->GetFlags() & restrict_flags)) {
+      continue;
+    }
+
+    if (n->GetFlags() & Node::kDontShowInCreateMenu) {
       continue;
     }
 
@@ -228,10 +237,12 @@ Node *NodeFactory::CreateFromFactoryIndex(const NodeFactory::InternalID &id)
     return new MergeNode();
   case kStrokeFilter:
     return new StrokeFilterNode();
-  case kTextGeneratorLegacy:
-    return new TextGeneratorLegacy();
-  case kTextGenerator:
-    return new TextGenerator();
+  case kTextGeneratorV1:
+    return new TextGeneratorV1();
+  case kTextGeneratorV2:
+    return new TextGeneratorV2();
+  case kTextGeneratorV3:
+    return new TextGeneratorV3();
   case kCrossDissolveTransition:
     return new CrossDissolveTransition();
   case kDipToColorTransition:
@@ -254,6 +265,10 @@ Node *NodeFactory::CreateFromFactoryIndex(const NodeFactory::InternalID &id)
     return new SubtitleBlock();
   case kShapeGenerator:
     return new ShapeNode();
+  case kColorDifferenceKeyKeying:
+    return new ColorDifferenceKeyNode();
+  case kDespillKeying:
+    return new DespillNode();
   case kGroupNode:
     return new NodeGroup();
   case kOpacityEffect:
@@ -264,6 +279,18 @@ Node *NodeFactory::CreateFromFactoryIndex(const NodeFactory::InternalID &id)
     return new NoiseGeneratorNode();
   case kTimeOffsetNode:
     return new TimeOffsetNode();
+  case kCornerPinDistort:
+    return new CornerPinDistortNode();
+  case kDisplayTransform:
+    return new DisplayTransformNode();
+  case kOCIOGradingTransformLinear:
+    return new OCIOGradingTransformLinearNode();
+  case kChromaKey:
+    return new ChromaKeyNode();
+  case kMaskDistort:
+    return new MaskDistortNode();
+  case kDropShadowFilter:
+    return new DropShadowFilter();
 
   case kInternalNodeCount:
     break;

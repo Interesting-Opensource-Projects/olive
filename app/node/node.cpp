@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -42,15 +42,19 @@ namespace olive {
 
 #define super QObject
 
+const QString Node::kEnabledInput = QStringLiteral("enabled_in");
+
 Node::Node() :
   can_be_deleted_(true),
   override_color_(-1),
   folder_(nullptr),
-  operation_stack_(0),
   cache_result_(false),
   flags_(kNone)
 {
-  uuid_ = QUuid::createUuid();
+  AddInput(kEnabledInput, NodeValue::kBoolean, true);
+
+  video_cache_ = new FrameHashCache(this);
+  audio_cache_ = new AudioPlaybackCache(this);
 }
 
 Node::~Node()
@@ -77,18 +81,9 @@ NodeGraph *Node::parent() const
   return static_cast<NodeGraph*>(QObject::parent());
 }
 
-Project* Node::project() const
+Project *Node::project() const
 {
-  QObject *t = this->parent();
-
-  while (t) {
-    if (Project *p = dynamic_cast<Project*>(t)) {
-      return p;
-    }
-    t = t->parent();
-  }
-
-  return nullptr;
+  return Project::GetProjectFromObject(this);
 }
 
 QString Node::ShortName() const
@@ -104,6 +99,7 @@ QString Node::Description() const
 
 void Node::Retranslate()
 {
+  SetInputName(kEnabledInput, tr("Enabled"));
 }
 
 QIcon Node::icon() const
@@ -153,7 +149,7 @@ Color Node::color() const
   if (override_color_ >= 0) {
     c = override_color_;
   } else {
-    c = Config::Current()[QStringLiteral("CatColor%1").arg(this->Category().first())].toInt();
+    c = OLIVE_CONFIG_STR(QStringLiteral("CatColor%1").arg(this->Category().first())).toInt();
   }
 
   return ColorCoding::GetColor(c);
@@ -176,7 +172,7 @@ QLinearGradient Node::gradient_color(qreal top, qreal bottom) const
 
 QBrush Node::brush(qreal top, qreal bottom) const
 {
-  if (Config::Current()[QStringLiteral("UseGradients")].toBool()) {
+  if (OLIVE_CONFIG("UseGradients").toBool()) {
     return gradient_color(top, bottom);
   } else {
     return color().toQColor();
@@ -555,6 +551,37 @@ QVariant Node::GetSplitDefaultValueOnTrack(const QString &input, int track) cons
   }
 }
 
+void Node::SetDefaultValue(const QString &input, const QVariant &val)
+{
+  NodeValue::Type type = GetInputDataType(input);
+
+  SetSplitDefaultValue(input, NodeValue::split_normal_value_into_track_values(type, val));
+}
+
+void Node::SetSplitDefaultValue(const QString &input, const SplitValue &val)
+{
+  Input* i = GetInternalInputData(input);
+
+  if (i) {
+    i->default_value = val;
+  } else {
+    ReportInvalidInput("set default value of", input);
+  }
+}
+
+void Node::SetSplitDefaultValueOnTrack(const QString &input, const QVariant &val, int track)
+{
+  Input* i = GetInternalInputData(input);
+
+  if (i) {
+    if (track < i->default_value.size()) {
+      i->default_value[track] = val;
+    }
+  } else {
+    ReportInvalidInput("set default value on track of", input);
+  }
+}
+
 const QVector<NodeKeyframeTrack> &Node::GetKeyframeTracks(const QString &input, int element) const
 {
   return GetImmediate(input, element)->keyframe_tracks();
@@ -839,12 +866,6 @@ int Node::InputArraySize(const QString &id) const
   }
 }
 
-void Node::Hash(const Node *node, const ValueHint &hint, QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams &video_params)
-{
-  hint.Hash(hash);
-  node->Hash(hash, globals, video_params);
-}
-
 void Node::SetValueHintForInput(const QString &input, const ValueHint &hint, int element)
 {
   value_hints_.insert({input, element}, hint);
@@ -886,6 +907,18 @@ InputFlags Node::GetInputFlags(const QString &input) const
   }
 }
 
+void Node::SetInputFlags(const QString &input, const InputFlags &f)
+{
+  Input* i = GetInternalInputData(input);
+
+  if (i) {
+    i->flags = f;
+    emit InputFlagsChanged(input, i->flags);
+  } else {
+    ReportInvalidInput("set flags of", input);
+  }
+}
+
 void Node::Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const
 {
   // Do nothing
@@ -899,19 +932,16 @@ void Node::InvalidateCache(const TimeRange &range, const QString &from, int elem
   Q_UNUSED(from)
   Q_UNUSED(element)
 
+  if (range.in() != range.out()) {
+    if (video_cache_->IsEnabled()) {
+      video_frame_cache()->Invalidate(range);
+    }
+    if (audio_cache_->IsEnabled()) {
+      audio_playback_cache()->Invalidate(range);
+    }
+  }
+
   SendInvalidateCache(range, options);
-}
-
-void Node::BeginOperation()
-{
-  // Increase operation stack
-  operation_stack_++;
-}
-
-void Node::EndOperation()
-{
-  // Decrease operation stack
-  operation_stack_--;
 }
 
 TimeRange Node::InputTimeAdjustment(const QString &, int, const TimeRange &input_time) const
@@ -991,11 +1021,43 @@ Node *Node::CopyNodeAndDependencyGraphMinusItemsInternal(QMap<Node*, Node*>& cre
   // Add to map
   created.insert(node, copy);
 
-  // Copy values to the clone
-  CopyInputs(node, copy, false);
-
   // Add it to the same graph
   command->add_child(new NodeAddCommand(node->parent(), copy));
+
+  // Copy context children
+  const PositionMap &map = node->GetContextPositions();
+  for (auto it=map.cbegin(); it!=map.cend(); it++) {
+    // Add either the copy (if it exists) or the original node to the context
+    Node *child;
+
+    if (it.key()->IsItem()) {
+      child = it.key();
+    } else {
+      child = created.value(it.key());
+      if (!child) {
+        child = CopyNodeAndDependencyGraphMinusItemsInternal(created, it.key(), command);
+      }
+    }
+
+    command->add_child(new NodeSetPositionCommand(child, copy, it.value()));
+  }
+
+  // If this is a group, copy input and output passthroughs
+  if (NodeGroup *src_group = dynamic_cast<NodeGroup*>(node)) {
+    NodeGroup *dst_group = static_cast<NodeGroup*>(copy);
+
+    for (auto it=src_group->GetInputPassthroughs().cbegin(); it!=src_group->GetInputPassthroughs().cend(); it++) {
+      // This node should have been created by the context loop above
+      NodeInput input = it->second;
+      input.set_node(created.value(input.node()));
+      command->add_child(new NodeGroupAddInputPassthrough(dst_group, input, it->first));
+    }
+
+    command->add_child(new NodeGroupSetOutputPassthrough(dst_group, created.value(src_group->GetOutputPassthrough())));
+  }
+
+  // Copy values to the clone
+  CopyInputs(node, copy, false, command);
 
   // Go through input connections and copy if non-item and connect if item
   for (auto it=node->input_connections_.cbegin(); it!=node->input_connections_.cend(); it++) {
@@ -1009,21 +1071,15 @@ Node *Node::CopyNodeAndDependencyGraphMinusItemsInternal(QMap<Node*, Node*>& cre
     } else {
       // Non-item, we want to clone this too
       connected_copy = created.value(connected, nullptr);
-
       if (!connected_copy) {
         connected_copy = CopyNodeAndDependencyGraphMinusItemsInternal(created, connected, command);
       }
     }
 
-    NodeInput copied_input(copy, input.input(), input.element());
+    NodeInput copied_input = input;
+    copied_input.set_node(copy);
     command->add_child(new NodeEdgeAddCommand(connected_copy, copied_input));
     command->add_child(new NodeSetValueHintCommand(copied_input, node->GetValueHintForInput(input.input(), input.element())));
-  }
-
-  const PositionMap &map = node->GetContextPositions();
-  for (auto it=map.cbegin(); it!=map.cend(); it++) {
-    // Add either the copy (if it exists) or the original node to the context
-    command->add_child(new NodeSetPositionCommand(created.value(it.key(), it.key()), copy, it.value()));
   }
 
   return copy;
@@ -1040,15 +1096,14 @@ Node *Node::CopyNodeInGraph(Node *node, MultiUndoCommand *command)
 {
   Node* copy;
 
-  if (Config::Current()[QStringLiteral("SplitClipsCopyNodes")].toBool()) {
+  if (OLIVE_CONFIG("SplitClipsCopyNodes").toBool()) {
     copy = Node::CopyNodeAndDependencyGraphMinusItems(node, command);
   } else {
     copy = node->copy();
 
-    command->add_child(new NodeAddCommand(static_cast<NodeGraph*>(node->parent()),
-                                          copy));
+    command->add_child(new NodeAddCommand(static_cast<NodeGraph*>(node->parent()), copy));
 
-    command->add_child(new NodeCopyInputsCommand(node, copy, true));
+    CopyInputs(node, copy, true, command);
 
     const PositionMap &map = node->GetContextPositions();
     for (auto it=map.cbegin(); it!=map.cend(); it++) {
@@ -1062,13 +1117,11 @@ Node *Node::CopyNodeInGraph(Node *node, MultiUndoCommand *command)
 
 void Node::SendInvalidateCache(const TimeRange &range, const InvalidateCacheOptions &options)
 {
-  if (GetOperationStack() == 0) {
-    for (const OutputConnection& conn : output_connections_) {
-      // Send clear cache signal to the Node
-      const NodeInput& in = conn.second;
+  for (const OutputConnection& conn : output_connections_) {
+    // Send clear cache signal to the Node
+    const NodeInput& in = conn.second;
 
-      in.node()->InvalidateCache(range, in.input(), in.element(), options);
-    }
+    in.node()->InvalidateCache(range, in.input(), in.element(), options);
   }
 }
 
@@ -1120,12 +1173,6 @@ bool Node::Unlink(Node *a, Node *b)
 bool Node::AreLinked(Node *a, Node *b)
 {
   return a->links_.contains(b);
-}
-
-void Node::HashAddNodeSignature(QCryptographicHash &hash) const
-{
-  // Add node ID
-  hash.addData(id().toUtf8());
 }
 
 void Node::InsertInput(const QString &id, NodeValue::Type type, const QVariant &default_value, InputFlags flags, int index)
@@ -1243,33 +1290,6 @@ void Node::IgnoreInvalidationsFrom(const QString& input_id)
   ignore_connections_.append(input_id);
 }
 
-void Node::IgnoreHashingFrom(const QString &input_id)
-{
-  ignore_when_hashing_.append(input_id);
-}
-
-bool Node::HasGizmos() const
-{
-  return false;
-}
-
-void Node::DrawGizmos(const NodeValueRow &, const NodeGlobals &, QPainter *)
-{
-}
-
-bool Node::GizmoPress(const NodeValueRow &, const NodeGlobals &, const QPointF &)
-{
-  return false;
-}
-
-void Node::GizmoMove(const QPointF &, const rational&, const Qt::KeyboardModifiers &)
-{
-}
-
-void Node::GizmoRelease(MultiUndoCommand *)
-{
-}
-
 const QString &Node::GetLabel() const
 {
   return label_;
@@ -1301,99 +1321,129 @@ QString Node::GetLabelOrName() const
   return GetLabel();
 }
 
-void Node::Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams &video_params) const
-{
-  // Add this Node's ID and output being used
-  HashAddNodeSignature(hash);
-
-  foreach (const QString& input, inputs()) {
-    // For each input, try to hash its value
-    if (ignore_when_hashing_.contains(input)) {
-      continue;
-    }
-
-    int arr_sz = InputArraySize(input);
-    for (int i=-1; i<arr_sz; i++) {
-      HashInputElement(hash, input, i, globals, video_params);
-    }
-  }
-}
-
-void Node::CopyInputs(const Node *source, Node *destination, bool include_connections)
+void Node::CopyInputs(const Node *source, Node *destination, bool include_connections, MultiUndoCommand *command)
 {
   Q_ASSERT(source->id() == destination->id());
 
   foreach (const QString& input, source->inputs()) {
-    CopyInput(source, destination, input, include_connections, true);
+    // NOTE: This assert is to ensure that inputs in the source also exist in the destination, which
+    //       they should. If they don't and you hit this assert, check if you're handling group
+    //       passthroughs correctly.
+    Q_ASSERT(destination->HasInputWithID(input));
+
+    CopyInput(source, destination, input, include_connections, true, command);
   }
 
-  destination->SetLabel(source->GetLabel());
-  destination->SetOverrideColor(source->GetOverrideColor());
+  if (command) {
+    command->add_child(new NodeRenameCommand(destination, source->GetLabel()));
+  } else {
+    destination->SetLabel(source->GetLabel());
+  }
+
+  if (command) {
+    command->add_child(new NodeOverrideColorCommand(destination, source->GetOverrideColor()));
+  } else {
+    destination->SetOverrideColor(source->GetOverrideColor());
+  }
 }
 
-void Node::CopyInput(const Node *src, Node *dst, const QString &input, bool include_connections, bool traverse_arrays)
+void Node::CopyInput(const Node *src, Node *dst, const QString &input, bool include_connections, bool traverse_arrays, MultiUndoCommand *command)
 {
   Q_ASSERT(src->id() == dst->id());
 
-  CopyValuesOfElement(src, dst, input, -1);
+  CopyValuesOfElement(src, dst, input, -1, command);
 
   // Copy array size
   if (src->InputIsArray(input) && traverse_arrays) {
     int src_array_sz = src->InputArraySize(input);
 
     for (int i=0; i<src_array_sz; i++) {
-      CopyValuesOfElement(src, dst, input, i);
+      CopyValuesOfElement(src, dst, input, i, command);
     }
   }
 
   // Copy connections
   if (include_connections) {
-    if (traverse_arrays) {
-      // Copy all connections
-      for (auto it=src->input_connections().cbegin(); it!=src->input_connections().cend(); it++) {
-        ConnectEdge(it->second, NodeInput(dst, input, it->first.element()));
+    // Copy all connections
+    for (auto it=src->input_connections().cbegin(); it!=src->input_connections().cend(); it++) {
+      if (!traverse_arrays && it->first.element() != -1) {
+        continue;
       }
-    } else {
-      // Just copy the primary connection (at -1)
-      if (src->IsInputConnected(input)) {
-        ConnectEdge(src->GetConnectedOutput(input), NodeInput(dst, input));
+
+      auto conn_output = it->second;
+      NodeInput conn_input(dst, input, it->first.element());
+
+      if (command) {
+        command->add_child(new NodeEdgeAddCommand(conn_output, conn_input));
+      } else {
+        ConnectEdge(conn_output, conn_input);
       }
     }
   }
 }
 
-void Node::CopyValuesOfElement(const Node *src, Node *dst, const QString &input, int src_element, int dst_element)
+void Node::CopyValuesOfElement(const Node *src, Node *dst, const QString &input, int src_element, int dst_element, MultiUndoCommand *command)
 {
   if (dst_element >= dst->GetInternalInputArraySize(input)) {
     qDebug() << "Ignored destination element that was out of array bounds";
     return;
   }
 
+  NodeInput dst_input(dst, input, dst_element);
+
   // Copy standard value
-  dst->SetSplitStandardValue(input, src->GetSplitStandardValue(input, src_element), dst_element);
+  SplitValue standard = src->GetSplitStandardValue(input, src_element);
+  if (command) {
+    command->add_child(new NodeParamSetSplitStandardValueCommand(dst_input, standard));
+  } else {
+    dst->SetSplitStandardValue(input, standard, dst_element);
+  }
 
   // Copy keyframes
   if (NodeInputImmediate *immediate = dst->GetImmediate(input, dst_element)) {
-    immediate->delete_all_keyframes();
+    if (command) {
+      command->add_child(new ImmediateRemoveAllKeyframesCommand(immediate));
+    } else {
+      immediate->delete_all_keyframes();
+    }
   }
+
   foreach (const NodeKeyframeTrack& track, src->GetImmediate(input, src_element)->keyframe_tracks()) {
     foreach (NodeKeyframe* key, track) {
-      key->copy(dst_element, dst);
+      NodeKeyframe *copy = key->copy(dst_element, command ? nullptr : dst);
+      if (command) {
+        command->add_child(new NodeParamInsertKeyframeCommand(dst, copy));
+      }
     }
   }
 
   // Copy keyframing state
   if (src->IsInputKeyframable(input)) {
-    dst->SetInputIsKeyframing(input, src->IsInputKeyframing(input, src_element), dst_element);
+    bool is_keying = src->IsInputKeyframing(input, src_element);
+    if (command) {
+      command->add_child(new NodeParamSetKeyframingCommand(dst_input, is_keying));
+    } else {
+      dst->SetInputIsKeyframing(input, is_keying, dst_element);
+    }
   }
 
   // If this is the root of an array, copy the array size
   if (src_element == -1 && dst_element == -1) {
-    dst->ArrayResizeInternal(input, src->InputArraySize(input));
+    int array_sz = src->InputArraySize(input);
+    if (command) {
+      command->add_child(new Node::ArrayResizeCommand(dst, input, array_sz));
+    } else {
+      dst->ArrayResizeInternal(input, array_sz);
+    }
   }
 
   // Copy value hint
-  dst->SetValueHintForInput(input, src->GetValueHintForInput(input, src_element), dst_element);
+  Node::ValueHint vh = src->GetValueHintForInput(input, src_element);
+  if (command) {
+    command->add_child(new NodeSetValueHintCommand(dst_input, vh));
+  } else {
+    dst->SetValueHintForInput(input, vh, dst_element);
+  }
 }
 
 bool Node::CanBeDeleted() const
@@ -1440,26 +1490,6 @@ QVector<Node *> Node::GetDependenciesInternal(bool traverse, bool exclusive_only
   return list;
 }
 
-void Node::HashInputElement(QCryptographicHash &hash, const QString& input, int element, const NodeGlobals &globals, const VideoParams& video_params) const
-{
-  // Get time adjustment
-  // For a single frame, we only care about one of the times
-  TimeRange input_time = InputTimeAdjustment(input, element, globals.time());
-
-  if (IsInputConnected(input, element)) {
-    // Traverse down this edge
-    Node *output = GetConnectedOutput(input, element);
-
-    NodeGlobals new_globals = globals;
-    new_globals.set_time(input_time);
-    Node::Hash(output, GetValueHintForInput(input, element), hash, new_globals, video_params);
-  } else {
-    // Grab the value at this time
-    QVariant value = GetValueAtTime(input, input_time.in(), element);
-    hash.addData(NodeValue::ValueToBytes(GetInputDataType(input), value));
-  }
-}
-
 QVector<Node *> Node::GetDependencies() const
 {
   return GetDependenciesInternal(true, false);
@@ -1475,14 +1505,12 @@ QVector<Node *> Node::GetImmediateDependencies() const
   return GetDependenciesInternal(false, false);
 }
 
-ShaderCode Node::GetShaderCode(const QString &shader_id) const
+ShaderCode Node::GetShaderCode(const ShaderRequest &request) const
 {
-  Q_UNUSED(shader_id)
-
   return ShaderCode(QString(), QString());
 }
 
-void Node::ProcessSamples(const NodeValueRow &, const SampleBufferPtr, SampleBufferPtr, int) const
+void Node::ProcessSamples(const NodeValueRow &, const SampleBuffer &, SampleBuffer &, int) const
 {
 }
 
@@ -1619,16 +1647,14 @@ void Node::DisconnectAll()
 QString Node::GetCategoryName(const CategoryID &c)
 {
   switch (c) {
-  case kCategoryInput:
-    return tr("Input");
   case kCategoryOutput:
     return tr("Output");
-  case kCategoryGeneral:
-    return tr("General");
   case kCategoryDistort:
     return tr("Distort");
   case kCategoryMath:
     return tr("Math");
+  case kCategoryKeying:
+    return tr("Keying");
   case kCategoryColor:
     return tr("Color");
   case kCategoryFilter:
@@ -1637,16 +1663,12 @@ QString Node::GetCategoryName(const CategoryID &c)
     return tr("Timeline");
   case kCategoryGenerator:
     return tr("Generator");
-  case kCategoryChannels:
-    return tr("Channel");
   case kCategoryTransition:
     return tr("Transition");
   case kCategoryProject:
     return tr("Project");
-  case kCategoryVideoEffect:
-    return tr("Video Effect");
-  case kCategoryAudioEffect:
-    return tr("Audio Effect");
+  case kCategoryTime:
+    return tr("Time");
   case kCategoryUnknown:
   case kCategoryCount:
     break;
@@ -1760,39 +1782,6 @@ void Node::ClearElement(const QString& input, int index)
   SetSplitStandardValue(input, GetSplitDefaultValue(input), index);
 }
 
-QRectF Node::CreateGizmoHandleRect(const QPointF &pt, int radius)
-{
-  return QRectF(pt.x() - radius,
-                pt.y() - radius,
-                2*radius,
-                2*radius);
-}
-
-double Node::GetGizmoHandleRadius(const QTransform &transform)
-{
-  double raw_value = QFontMetrics(qApp->font()).height() * 0.25;
-
-  raw_value /= transform.m11();
-
-  return raw_value;
-}
-
-void Node::DrawAndExpandGizmoHandles(QPainter *p, int handle_radius, QRectF *rects, int count)
-{
-  p->setPen(Qt::NoPen);
-  p->setBrush(Qt::white);
-
-  for (int i=0; i<count; i++) {
-    QRectF& r = rects[i];
-
-    // Draw rect on screen
-    p->drawRect(r);
-
-    // Extend rect so it's easier to drag with handle
-    r.adjust(-handle_radius, -handle_radius, handle_radius, handle_radius);
-  }
-}
-
 void Node::InputValueChangedEvent(const QString &input, int element)
 {
   Q_UNUSED(input)
@@ -1827,9 +1816,7 @@ void Node::childEvent(QChildEvent *event)
 {
   super::childEvent(event);
 
-  NodeKeyframe* key = dynamic_cast<NodeKeyframe*>(event->child());
-
-  if (key) {
+  if (NodeKeyframe* key = dynamic_cast<NodeKeyframe*>(event->child())) {
     NodeInput i(this, key->input(), key->element());
 
     if (event->type() == QEvent::ChildAdded) {
@@ -1856,6 +1843,12 @@ void Node::childEvent(QChildEvent *event)
 
       GetImmediate(key->input(), key->element())->remove_keyframe(key);
       ParameterValueChanged(i, time_affected);
+    }
+  } else if (NodeGizmo *gizmo = dynamic_cast<NodeGizmo*>(event->child())) {
+    if (event->type() == QEvent::ChildAdded) {
+      gizmos_.append(gizmo);
+    } else if (event->type() == QEvent::ChildRemoved) {
+      gizmos_.removeOne(gizmo);
     }
   }
 }
@@ -1945,6 +1938,88 @@ void Node::InvalidateFromKeyframeTypeChanged()
   emit KeyframeTypeChanged(key);
 }
 
+void Node::SetValueAtTime(const NodeInput &input, const rational &time, const QVariant &value, int track, MultiUndoCommand *command, bool insert_on_all_tracks_if_no_key)
+{
+  if (input.IsKeyframing()) {
+    rational node_time = time;
+
+    NodeKeyframe* existing_key = input.GetKeyframeAtTimeOnTrack(node_time, track);
+
+    if (existing_key) {
+      command->add_child(new NodeParamSetKeyframeValueCommand(existing_key, value));
+    } else {
+      // No existing key, create a new one
+      int nb_tracks = NodeValue::get_number_of_keyframe_tracks(input.node()->GetInputDataType(input.input()));
+      for (int i=0; i<nb_tracks; i++) {
+        QVariant track_value;
+
+        if (i == track) {
+          track_value = value;
+        } else if (!insert_on_all_tracks_if_no_key) {
+          continue;
+        } else {
+          track_value = input.node()->GetSplitValueAtTimeOnTrack(input.input(), node_time, i, input.element());
+        }
+
+        NodeKeyframe* new_key = new NodeKeyframe(node_time,
+                                                 track_value,
+                                                 input.node()->GetBestKeyframeTypeForTimeOnTrack(NodeKeyframeTrackReference(input, i), node_time),
+                                                 i,
+                                                 input.element(),
+                                                 input.input());
+
+        command->add_child(new NodeParamInsertKeyframeCommand(input.node(), new_key));
+      }
+    }
+  } else {
+    command->add_child(new NodeParamSetStandardValueCommand(NodeKeyframeTrackReference(input, track), value));
+  }
+}
+
+void FindPathInternal(std::list<Node *> &vec, Node *to, int &path_index)
+{
+  Node *from = vec.back();
+
+  for (auto it=from->input_connections().cbegin(); it!=from->input_connections().cend(); it++) {
+    vec.push_back(it->second);
+    if (it->second == to) {
+      // Found a path, determine if it's the one we want
+      if (path_index == 0) {
+        // It is!
+        break;
+      } else {
+        path_index--;
+      }
+    }
+
+    // Recurse to see if we can find it here
+    FindPathInternal(vec, to, path_index);
+    if (vec.back() == to) {
+      // Found through recursion
+      break;
+    } else {
+      // Must not be available through this path
+      vec.pop_back();
+    }
+  }
+}
+
+std::list<Node *> Node::FindPath(Node *from, Node *to, int path_index)
+{
+  std::list<Node *> v;
+
+  v.push_back(from);
+
+  FindPathInternal(v, to, path_index);
+
+  if (v.size() == 1) {
+    // Failed to find path, return empty list
+    v.pop_back();
+  }
+
+  return v;
+}
+
 Project *Node::ArrayInsertCommand::GetRelevantProject() const
 {
   return node_->project();
@@ -2018,16 +2093,6 @@ void NodeRemovePositionFromAllContextsCommand::undo()
   contexts_.clear();
 }
 
-void Node::ValueHint::Hash(QCryptographicHash &hash) const
-{
-  // Add value hint
-  if (!types().isEmpty()) {
-    hash.addData(reinterpret_cast<const char*>(types().constData()), sizeof(NodeValue::Type) * types().size());
-  }
-  hash.addData(reinterpret_cast<const char*>(&index()), sizeof(index()));
-  hash.addData(tag().toUtf8());
-}
-
 void NodeSetPositionAndDependenciesRecursivelyCommand::prepare()
 {
   move_recursively(node_, pos_.position - context_->GetNodePositionDataInContext(node_).position);
@@ -2058,6 +2123,27 @@ void NodeSetPositionAndDependenciesRecursivelyCommand::move_recursively(Node *no
     if (context_->ContextContainsNode(output)) {
       move_recursively(output, diff);
     }
+  }
+}
+
+void Node::ImmediateRemoveAllKeyframesCommand::prepare()
+{
+  for (const NodeKeyframeTrack& track : immediate_->keyframe_tracks()) {
+    keys_.append(track);
+  }
+}
+
+void Node::ImmediateRemoveAllKeyframesCommand::redo()
+{
+  for (auto it=keys_.cbegin(); it!=keys_.cend(); it++) {
+    (*it)->setParent(&memory_manager_);
+  }
+}
+
+void Node::ImmediateRemoveAllKeyframesCommand::undo()
+{
+  for (auto it=keys_.crbegin(); it!=keys_.crend(); it++) {
+    (*it)->setParent(&memory_manager_);
   }
 }
 

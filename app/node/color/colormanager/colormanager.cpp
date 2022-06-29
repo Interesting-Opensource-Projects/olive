@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -34,6 +34,8 @@ const QString ColorManager::kConfigFilenameIn = QStringLiteral("config");
 const QString ColorManager::kDefaultColorspaceIn = QStringLiteral("default_input");
 const QString ColorManager::kReferenceSpaceIn = QStringLiteral("reference_space");
 
+#define super Node
+
 OCIO::ConstConfigRcPtr ColorManager::default_config_ = nullptr;
 
 ColorManager::ColorManager() :
@@ -50,7 +52,7 @@ ColorManager::ColorManager() :
 
   // Set config to our built-in default
   SetConfig(GetDefaultConfig());
-  SetDefaultInputColorSpace(QStringLiteral("sRGB OETF"));
+  SetDefaultInputColorSpace(config_->getCanonicalName(OCIO::ROLE_DEFAULT));
 }
 
 OCIO::ConstConfigRcPtr ColorManager::GetConfig() const
@@ -253,6 +255,8 @@ void ColorManager::GetDefaultLumaCoefs(double *rgb) const
 
 void ColorManager::Retranslate()
 {
+  super::Retranslate();
+
   SetInputName(kConfigFilenameIn, tr("Configuration"));
   SetInputName(kDefaultColorspaceIn, tr("Default Input"));
   SetInputName(kReferenceSpaceIn, tr("Reference Space"));
@@ -269,6 +273,7 @@ void ColorManager::InputValueChangedEvent(const QString &input, int element)
 
     try {
       SetConfig(OCIO::Config::CreateFromFile(GetConfigFilename().toUtf8()));
+      emit ConfigChanged();
     } catch (OCIO::Exception&) {}
 
   }

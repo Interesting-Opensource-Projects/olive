@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 
 #include "openglrenderer.h"
 
+#include <iostream>
 #include <QDateTime>
 #include <QDebug>
 #include <QOpenGLExtraFunctions>
@@ -421,8 +422,7 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
   GL_PREAMBLE;
 
   // If this node is iterative, we'll pick up which input here
-  QString iterative_name;
-  GLuint iterative_input = 0;
+  QMap<QString, GLuint> texture_index_map;
   QVector<TextureToBind> textures_to_bind;
 
   GLuint shader = s.value<GLuint>();
@@ -448,57 +448,53 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
     case NodeValue::kInt:
       // kInt technically specifies a LongLong, but OpenGL doesn't support those. This may lead to
       // over/underflows if the number is large enough, but the likelihood of that is quite low.
-      functions_->glUniform1i(variable_location, value.data().toInt());
+      functions_->glUniform1i(variable_location, value.toInt());
       break;
     case NodeValue::kFloat:
       // kFloat technically specifies a double but as above, OpenGL doesn't support those.
-      functions_->glUniform1f(variable_location, value.data().toFloat());
+      functions_->glUniform1f(variable_location, value.toDouble());
       break;
     case NodeValue::kVec2:
     {
-      QVector2D v = value.data().value<QVector2D>();
+      QVector2D v = value.toVec2();
       functions_->glUniform2fv(variable_location, 1, reinterpret_cast<const GLfloat*>(&v));
       break;
     }
     case NodeValue::kVec3:
     {
-      QVector3D v = value.data().value<QVector3D>();
+      QVector3D v = value.toVec3();
       functions_->glUniform3fv(variable_location, 1, reinterpret_cast<const GLfloat*>(&v));
       break;
     }
     case NodeValue::kVec4:
     {
-      QVector4D v = value.data().value<QVector4D>();
+      QVector4D v = value.toVec4();
       functions_->glUniform4fv(variable_location, 1, reinterpret_cast<const GLfloat*>(&v));
       break;
     }
     case NodeValue::kMatrix:
-      functions_->glUniformMatrix4fv(variable_location, 1, false, value.data().value<QMatrix4x4>().constData());
+      functions_->glUniformMatrix4fv(variable_location, 1, false, value.toMatrix().constData());
       break;
     case NodeValue::kCombo:
-      functions_->glUniform1i(variable_location, value.data().value<int>());
+      functions_->glUniform1i(variable_location, value.toInt());
       break;
     case NodeValue::kColor:
     {
-      Color color = value.data().value<Color>();
+      Color color = value.toColor();
       functions_->glUniform4f(variable_location, color.red(), color.green(), color.blue(), color.alpha());
       break;
     }
     case NodeValue::kBoolean:
-      functions_->glUniform1i(variable_location, value.data().toBool());
+      functions_->glUniform1i(variable_location, value.toBool());
       break;
     case NodeValue::kTexture:
     {
-      TexturePtr texture = value.data().value<TexturePtr>();
+      TexturePtr texture = value.toTexture();
 
       // Set value to bound texture
       functions_->glUniform1i(variable_location, textures_to_bind.size());
 
-      // If this texture binding is the iterative input, set it here
-      if (it.key() == job.GetIterativeInput()) {
-        iterative_input = textures_to_bind.size();
-        iterative_name = it.key();
-      }
+      texture_index_map.insert(it.key(), textures_to_bind.size());
 
       textures_to_bind.append({texture, job.GetInterpolation(it.key())});
 
@@ -517,12 +513,10 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
     case NodeValue::kFile:
     case NodeValue::kVideoParams:
     case NodeValue::kAudioParams:
-    case NodeValue::kShaderJob:
-    case NodeValue::kSampleJob:
-    case NodeValue::kGenerateJob:
-    case NodeValue::kFootageJob:
+    case NodeValue::kSubtitleParams:
     case NodeValue::kBezier:
     case NodeValue::kNone:
+    case NodeValue::kDataTypeCount:
       break;
     }
   }
@@ -539,20 +533,22 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
     GLenum target = (texture && texture->type() == Texture::k3D) ? GL_TEXTURE_3D : GL_TEXTURE_2D;
     functions_->glBindTexture(target, tex_id);
 
-    PrepareInputTexture(target, t.interpolation);
+    if (tex_id) {
+      PrepareInputTexture(target, t.interpolation);
 
-    if (texture && texture->channel_count() == 1 && destination_params.channel_count() != 1) {
-      // Interpret this texture as a grayscale texture
-      functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
-      functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
-      functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+      if (texture->channel_count() == 1 && destination_params.channel_count() != 1) {
+        // Interpret this texture as a grayscale texture
+        functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+        functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+        functions_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+      }
     }
   }
 
   // Ensure matrix is set, at least to identity
   GLint mvpmat_location = functions_->glGetUniformLocation(shader, "ove_mvpmat");
   if (mvpmat_location > -1) {
-    functions_->glUniformMatrix4fv(mvpmat_location, 1, false, job.GetValue(QStringLiteral("ove_mvpmat")).data().value<QMatrix4x4>().constData());
+    functions_->glUniformMatrix4fv(mvpmat_location, 1, false, job.Get(QStringLiteral("ove_mvpmat")).toMatrix().constData());
   }
 
   // Set the viewport to the "physical" resolution of the destination
@@ -569,7 +565,13 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
   QOpenGLBuffer vert_vbo_;
   vert_vbo_.create();
   vert_vbo_.bind();
-  vert_vbo_.allocate(blit_vertices.constData(), blit_vertices.size() * sizeof(GLfloat));
+  // If the job has vertex coordinate overrides use them instead of the defaults.
+  if (!job.GetVertexCoordinates().isEmpty()) {
+    Q_ASSERT(job.GetVertexCoordinates().size() == 18);
+    vert_vbo_.allocate(job.GetVertexCoordinates().constData(), job.GetVertexCoordinates().size() * sizeof(float));
+  } else {
+    vert_vbo_.allocate(blit_vertices.constData(), blit_vertices.size() * sizeof(GLfloat));
+  }
   vert_vbo_.release();
 
   QOpenGLBuffer frag_vbo_;
@@ -648,11 +650,12 @@ void OpenGLRenderer::Blit(QVariant s, ShaderJob job, Texture *destination, Video
     if (iteration > 0) {
       // If this is not the first iteration, replace the iterative texture with the one we
       // last drew
-      functions_->glActiveTexture(GL_TEXTURE0 + iterative_input);
+      const QString &iterative_input = job.GetIterativeInput();
+      functions_->glActiveTexture(GL_TEXTURE0 + texture_index_map.value(iterative_input));
       functions_->glBindTexture(GL_TEXTURE_2D, input_tex->id().value<GLuint>());
 
       // At this time, we only support iterating 2D textures
-      PrepareInputTexture(GL_TEXTURE_2D, job.GetInterpolation(iterative_name));
+      PrepareInputTexture(GL_TEXTURE_2D, job.GetInterpolation(iterative_input));
     }
 
     // Swap so that the next iteration, the texture we draw now will be the input texture next
@@ -801,6 +804,10 @@ void OpenGLRenderer::PrepareInputTexture(GLenum target, Texture::Interpolation i
 
   functions_->glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   functions_->glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+  if (target == GL_TEXTURE_3D) {
+    functions_->glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+  }
 }
 
 void OpenGLRenderer::ClearDestinationInternal(double r, double g, double b, double a)
@@ -877,16 +884,15 @@ GLuint OpenGLRenderer::GetCachedTexture(int width, int height, int depth, VideoP
 GLuint OpenGLRenderer::CompileShader(GLenum type, const QString &code)
 {
   static const QString shader_preamble =
-#ifndef Q_OS_MAC
-      // Use appropriate GL ES 2.0 shader header
-      QStringLiteral("#version 100\n\n"
+      // Use appropriate GL 3.2 shader header
+      QStringLiteral("#version 150\n\n"
                      "precision highp float;\n\n");
-#else
-      // Use desktop GL equivalent header because apparently macOS doesn't support the ES header
-      QStringLiteral("#version 120\n\n");
-#endif
 
-  QString complete_code = shader_preamble;
+  QString complete_code;
+
+  if (!code.startsWith(QStringLiteral("#version"))) {
+    complete_code = shader_preamble;
+  }
 
   if (code.isEmpty()) {
     // Use default code

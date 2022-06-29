@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -87,7 +87,8 @@ Core::Core(const CoreParams& params) :
   addable_object_(Tool::kAddableEmpty),
   snapping_(true),
   core_params_(params),
-  pixel_sampling_users_(0)
+  pixel_sampling_users_(0),
+  shown_cache_full_warning_(false)
 {
   // Store reference to this object, making the assumption that Core will only ever be made in
   // main(). This will obviously break if not.
@@ -108,7 +109,7 @@ void Core::DeclareTypesForQt()
   qRegisterMetaType<NodeValueTable>();
   qRegisterMetaType<NodeValueDatabase>();
   qRegisterMetaType<FramePtr>();
-  qRegisterMetaType<SampleBufferPtr>();
+  qRegisterMetaType<SampleBuffer>();
   qRegisterMetaType<AudioParams>();
   qRegisterMetaType<NodeKeyframe::Type>();
   qRegisterMetaType<Decoder::RetrieveState>();
@@ -185,9 +186,7 @@ void Core::Start()
     QTimer *crash_timer = new QTimer(this);
     crash_timer->setInterval(interval);
     connect(crash_timer, &QTimer::timeout, this, []{
-      // Try to read invalid memory to crash the application
-      int *invalid_ptr = nullptr;
-      qDebug() << *invalid_ptr;
+      abort();
     });
     crash_timer->start();
   }
@@ -245,14 +244,14 @@ UndoStack *Core::undo_stack()
   return &undo_stack_;
 }
 
-void Core::ImportFiles(const QStringList &urls, ProjectViewModel* model, Folder* parent)
+void Core::ImportFiles(const QStringList &urls, Folder* parent)
 {
   if (urls.isEmpty()) {
     QMessageBox::critical(main_window_, tr("Import error"), tr("Nothing to import"));
     return;
   }
 
-  ProjectImportTask* pim = new ProjectImportTask(model, parent, urls);
+  ProjectImportTask* pim = new ProjectImportTask(parent, urls);
 
   if (!pim->GetFileCount()) {
     // No files to import
@@ -364,13 +363,13 @@ void Core::DialogImportShow()
     // Get the selected folder in this panel
     Folder* folder = active_project_panel->GetSelectedFolder();
 
-    ImportFiles(files, active_project_panel->model(), folder);
+    ImportFiles(files, folder);
   }
 }
 
 void Core::DialogPreferencesShow()
 {
-  PreferencesDialog pd(main_window_, main_window_->menuBar());
+  PreferencesDialog pd(main_window_);
   pd.exec();
 }
 
@@ -391,10 +390,12 @@ void Core::DialogProjectPropertiesShow()
 
 void Core::DialogExportShow()
 {
-  ViewerOutput* viewer = GetSequenceToExport();
+  ViewerOutput* viewer;
+  rational time;
 
-  if (viewer) {
+  if (GetSequenceToExport(&viewer, &time)) {
     ExportDialog* ed = new ExportDialog(viewer, main_window_);
+    ed->SetTime(time);
     connect(ed, &ExportDialog::finished, ed, &ExportDialog::deleteLater);
     ed->open();
   }
@@ -521,6 +522,9 @@ bool Core::AddOpenProjectFromTask(Task *task)
       return true;
     } else {
       delete project;
+      if (open_projects_.empty()) {
+        CreateNewProject();
+      }
     }
   }
 
@@ -532,6 +536,49 @@ void Core::ImportTaskComplete(Task* task)
   ProjectImportTask* import_task = static_cast<ProjectImportTask*>(task);
 
   MultiUndoCommand *command = import_task->GetCommand();
+
+  foreach (Footage *f, import_task->GetImportedFootage()) {
+    // Look for multi-layer images
+    if (f->GetAudioStreamCount() == 0 && f->GetVideoStreamCount() > 1) {
+      bool all_stills = true;
+
+      for (int i=0; i<f->GetVideoStreamCount(); i++) {
+        const VideoParams &vs = f->GetVideoParams(i);
+        if (!(vs.video_type() == VideoParams::kVideoTypeStill && vs.enabled() == (i == 0))) {
+          all_stills = false;
+        }
+      }
+
+      if (all_stills) {
+        QMessageBox d(main_window());
+
+        d.setIcon(QMessageBox::Question);
+        d.setWindowTitle(tr("Multi-Layer Image"));
+        d.setText(tr("The file '%1' has multiple layers. Would you like these layers to be "
+                     "separated across multiple tracks or merged into a single image?").arg(f->filename()));
+
+        auto multi_btn = d.addButton(tr("Multiple Layers"), QMessageBox::YesRole);
+        auto single_btn = d.addButton(tr("Single Layer"), QMessageBox::NoRole);
+        auto cancel_btn = d.addButton(QMessageBox::Cancel);
+
+        d.exec();
+
+        if (d.clickedButton() == multi_btn) {
+          for (int i=0; i<f->GetVideoStreamCount(); i++) {
+            VideoParams vs = f->GetVideoParams(i);
+            vs.set_enabled(!vs.enabled());
+            f->SetVideoParams(vs, i);
+          }
+        } else if (d.clickedButton() == single_btn) {
+          // Do nothing, footage will already be set up this way
+        } else if (d.clickedButton() == cancel_btn) {
+          // Cancel import
+          delete command;
+          return;
+        }
+      }
+    }
+  }
 
   if (import_task->HasInvalidFiles()) {
     ProjectImportErrorDialog d(import_task->GetInvalidFiles(), main_window_);
@@ -751,7 +798,7 @@ void Core::StartGUI(bool full_screen)
   connect(this, &Core::ProjectClosed, main_window_, &MainWindow::ProjectClose);
 
   // Start autorecovery timer using the config value as its interval
-  SetAutorecoveryInterval(Config::Current()["AutorecoveryInterval"].toInt());
+  SetAutorecoveryInterval(OLIVE_CONFIG("AutorecoveryInterval").toInt());
   connect(&autorecovery_timer_, &QTimer::timeout, this, &Core::SaveAutorecovery);
   autorecovery_timer_.start();
 
@@ -815,7 +862,7 @@ void Core::SaveProjectInternal(Project* project, const QString& override_filenam
   psm->deleteLater();
 }
 
-ViewerOutput* Core::GetSequenceToExport()
+bool Core::GetSequenceToExport(ViewerOutput **viewer, rational *time)
 {
   // First try the most recently focused time based window
   TimeBasedPanel* time_panel = PanelManager::instance()->MostRecentlyFocused<TimeBasedPanel>();
@@ -833,7 +880,9 @@ ViewerOutput* Core::GetSequenceToExport()
                             tr("This Sequence is empty. There is nothing to export."),
                             QMessageBox::Ok);
     } else {
-      return time_panel->GetConnectedViewer();
+      *viewer = time_panel->GetConnectedViewer();
+      *time = time_panel->GetTime();
+      return true;
     }
   } else {
     QMessageBox::critical(main_window_,
@@ -842,7 +891,7 @@ ViewerOutput* Core::GetSequenceToExport()
                           QMessageBox::Ok);
   }
 
-  return nullptr;
+  return false;
 }
 
 QString Core::GetAutoRecoveryIndexFilename()
@@ -917,11 +966,11 @@ bool Core::RevertProjectInternal(Project *p, bool by_opening_existing)
 
 void Core::SaveAutorecovery()
 {
-  if (Config::Current()[QStringLiteral("AutorecoveryEnabled")].toBool()) {
+  if (OLIVE_CONFIG("AutorecoveryEnabled").toBool()) {
     foreach (Project* p, open_projects_) {
       if (!p->has_autorecovery_been_saved()) {
         QDir project_autorecovery_dir(QDir(FileFunctions::GetAutoRecoveryRoot()).filePath(p->GetUuid().toString()));
-        if (project_autorecovery_dir.mkpath(QStringLiteral("."))) {
+        if (FileFunctions::DirectoryIsValid(project_autorecovery_dir)) {
           QString this_autorecovery_path = project_autorecovery_dir.filePath(QStringLiteral("%1.ove").arg(QString::number(QDateTime::currentSecsSinceEpoch())));
 
           SaveProjectInternal(p, this_autorecovery_path);
@@ -943,7 +992,7 @@ void Core::SaveAutorecovery()
             realname_file.close();
           }
 
-          int64_t max_recoveries_per_file = Config::Current()[QStringLiteral("AutorecoveryMaximum")].toLongLong();
+          int64_t max_recoveries_per_file = OLIVE_CONFIG("AutorecoveryMaximum").toLongLong();
 
           // Since we write an extra file, increment total allowed files by 1
           max_recoveries_per_file++;
@@ -1032,12 +1081,12 @@ Folder *Core::GetSelectedFolderInActiveProject() const
 
 Timecode::Display Core::GetTimecodeDisplay() const
 {
-  return static_cast<Timecode::Display>(Config::Current()["TimecodeDisplay"].toInt());
+  return static_cast<Timecode::Display>(OLIVE_CONFIG("TimecodeDisplay").toInt());
 }
 
 void Core::SetTimecodeDisplay(Timecode::Display d)
 {
-  Config::Current()["TimecodeDisplay"] = d;
+  OLIVE_CONFIG("TimecodeDisplay") = d;
 
   emit TimecodeDisplayChanged(d);
 }
@@ -1159,7 +1208,7 @@ void Core::SetStartupLocale()
     }
   }
 
-  QString use_locale = Config::Current()[QStringLiteral("Language")].toString();
+  QString use_locale = OLIVE_CONFIG("Language").toString();
 
   if (use_locale.isEmpty()) {
     // No configured locale, auto-detect the system's locale
@@ -1253,6 +1302,22 @@ void Core::RequestPixelSamplingInViewers(bool e)
       // Signal to end pixel sampling
       emit ColorPickerEnabled(false);
     }
+  }
+}
+
+void Core::WarnCacheFull()
+{
+  if (!shown_cache_full_warning_ && main_window_) {
+    shown_cache_full_warning_ = true;
+
+    QMessageBox::warning(main_window_, tr("Disk Cache Full"),
+                         tr("The disk cache is currently full and Olive is having to delete old "
+                            "frames to keep it within the limits set in the Disk preferences. This "
+                            "will result in SIGNIFICANTLY reduced cache performance.\n\n"
+                            "To remedy this, please do one of the following:\n\n"
+                            "1. Manually clear the disk cache in Disk preferences.\n"
+                            "2. Increase the maximum disk cache size in Disk preferences.\n"
+                            "3. Reduce usage of the disk cache (e.g. disable auto-cache or only cache specific sections of your sequence)."));
   }
 }
 
@@ -1367,25 +1432,6 @@ int Core::CountFilesInFileList(const QFileInfoList &filenames)
   }
 
   return file_count;
-}
-
-QString GetRenderModePreferencePrefix(RenderMode::Mode mode, const QString &preference) {
-  QString key;
-
-  key.append((mode == RenderMode::kOffline) ? QStringLiteral("Offline") : QStringLiteral("Online"));
-  key.append(preference);
-
-  return key;
-}
-
-QVariant Core::GetPreferenceForRenderMode(RenderMode::Mode mode, const QString &preference)
-{
-  return Config::Current()[GetRenderModePreferencePrefix(mode, preference)];
-}
-
-void Core::SetPreferenceForRenderMode(RenderMode::Mode mode, const QString &preference, const QVariant &value)
-{
-  Config::Current()[GetRenderModePreferencePrefix(mode, preference)] = value;
 }
 
 bool Core::LabelNodes(const QVector<Node *> &nodes, MultiUndoCommand *parent)

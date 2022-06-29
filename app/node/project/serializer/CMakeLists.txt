@@ -1,5 +1,5 @@
 # Olive - Non-Linear Video Editor
-# Copyright (C) 2021 Olive Team
+# Copyright (C) 2022 Olive Team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,5 +27,7 @@ set(OLIVE_SOURCES
   node/project/serializer/serializer210907.h
   node/project/serializer/serializer211228.cpp
   node/project/serializer/serializer211228.h
+  node/project/serializer/serializer220403.cpp
+  node/project/serializer/serializer220403.h
   PARENT_SCOPE
 )

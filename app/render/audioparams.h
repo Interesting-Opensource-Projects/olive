@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,6 +21,10 @@
 #ifndef AUDIOPARAMS_H
 #define AUDIOPARAMS_H
 
+extern "C" {
+#include <libavutil/channel_layout.h>
+}
+
 #include <QtMath>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
@@ -31,30 +35,54 @@ namespace olive {
 
 class AudioParams {
 public:
+  // Only append to this list (never insert) because indexes are used in serialized files
   enum Format {
     /// Invalid
     kFormatInvalid = -1,
 
     /// 8-bit unsigned integer
-    kFormatUnsigned8,
+    kFormatUnsigned8Planar,
 
     /// 16-bit signed integer
-    kFormatSigned16,
+    kFormatSigned16Planar,
 
     /// 32-bit signed integer
-    kFormatSigned32,
+    kFormatSigned32Planar,
 
     /// 64-bit signed integer
-    kFormatSigned64,
+    kFormatSigned64Planar,
 
     /// 32-bit float
-    kFormatFloat32,
+    kFormatFloat32Planar,
 
     /// 64-bit float
-    kFormatFloat64,
+    kFormatFloat64Planar,
+
+    /// 8-bit unsigned integer
+    kFormatUnsigned8Packed,
+
+    /// 16-bit signed integer
+    kFormatSigned16Packed,
+
+    /// 32-bit signed integer
+    kFormatSigned32Packed,
+
+    /// 64-bit signed integer
+    kFormatSigned64Packed,
+
+    /// 32-bit float
+    kFormatFloat32Packed,
+
+    /// 64-bit float
+    kFormatFloat64Packed,
 
     /// Total format count
-    kFormatCount
+    kFormatCount,
+
+    kPlanarStart = kFormatUnsigned8Planar,
+    kPackedStart = kFormatUnsigned8Packed,
+    kPlanarEnd = kPackedStart,
+    kPackedEnd = kFormatCount
   };
 
   static const Format kInternalFormat;
@@ -158,6 +186,26 @@ public:
     duration_ = duration;
   }
 
+  static bool FormatIsPacked(Format f)
+  {
+    return f >= kPackedStart && f < kPackedEnd;
+  }
+
+  bool FormatIsPacked() const
+  {
+    return FormatIsPacked(format_);
+  }
+
+  static bool FormatIsPlanar(Format f)
+  {
+    return f >= kPlanarStart && f < kPlanarEnd;
+  }
+
+  bool FormatIsPlanar() const
+  {
+    return FormatIsPlanar(format_);
+  }
+
   qint64 time_to_bytes(const double& time) const;
   qint64 time_to_bytes(const rational& time) const;
   qint64 time_to_bytes_per_channel(const double& time) const;
@@ -173,8 +221,6 @@ public:
   int bytes_per_sample_per_channel() const;
   int bits_per_sample() const;
   bool is_valid() const;
-
-  QByteArray toBytes() const;
 
   void Load(QXmlStreamReader* reader);
 
@@ -195,6 +241,11 @@ public:
    * @brief Convert channel layout to a user-friendly string
    */
   static QString ChannelLayoutToString(const uint64_t &layout);
+
+  static QString FormatToString(const Format &f);
+
+  static AudioParams::Format GetPackedEquivalent(AudioParams::Format fmt);
+  static AudioParams::Format GetPlanarEquivalent(AudioParams::Format fmt);
 
 private:
   void set_default_footage_parameters()

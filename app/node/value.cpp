@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,14 +29,11 @@
 #include "common/bezier.h"
 #include "common/tohex.h"
 #include "render/audioparams.h"
+#include "render/subtitleparams.h"
 #include "render/videoparams.h"
 #include "render/color.h"
 
 namespace olive {
-
-const QVector<NodeValue::Type> NodeValue::kNumber = {kFloat, kInt, kRational};
-const QVector<NodeValue::Type> NodeValue::kBuffer = {kTexture, kSamples};
-const QVector<NodeValue::Type> NodeValue::kVector = {kVec2, kVec3, kVec4};
 
 QString NodeValue::ValueToString(Type data_type, const QVariant &value, bool value_is_a_key_track)
 {
@@ -94,57 +91,6 @@ QString NodeValue::ValueToString(Type data_type, const QVariant &value, bool val
 
     return QString();
   }
-}
-
-template<typename T>
-QByteArray ValueToBytesInternal(const QVariant &v)
-{
-  QByteArray bytes;
-
-  int size_of_type = sizeof(T);
-
-  bytes.resize(size_of_type);
-  T raw_val = v.value<T>();
-  memcpy(bytes.data(), &raw_val, static_cast<size_t>(size_of_type));
-
-  return bytes;
-}
-
-QByteArray NodeValue::ValueToBytes(NodeValue::Type type, const QVariant &value)
-{
-  switch (type) {
-  case kInt: return ValueToBytesInternal<int64_t>(value);
-  case kFloat: return ValueToBytesInternal<double>(value);
-  case kColor: return ValueToBytesInternal<Color>(value);
-  case kText: return value.toString().toUtf8();
-  case kBoolean: return ValueToBytesInternal<bool>(value);
-  case kFont: return value.toString().toUtf8();
-  case kFile: return value.toString().toUtf8();
-  case kMatrix: return ValueToBytesInternal<QMatrix4x4>(value);
-  case kRational: return ValueToBytesInternal<rational>(value);
-  case kVec2: return ValueToBytesInternal<QVector2D>(value);
-  case kVec3: return ValueToBytesInternal<QVector3D>(value);
-  case kVec4: return ValueToBytesInternal<QVector4D>(value);
-  case kCombo: return ValueToBytesInternal<int>(value);
-  case kBezier: return ValueToBytesInternal<Bezier>(value);
-
-  case kVideoParams:
-    return value.value<VideoParams>().toBytes();
-  case kAudioParams:
-    return value.value<AudioParams>().toBytes();
-
-  // These types have no persistent input
-  case kNone:
-  case kFootageJob:
-  case kTexture:
-  case kSamples:
-  case kShaderJob:
-  case kSampleJob:
-  case kGenerateJob:
-    break;
-  }
-
-  return QByteArray();
 }
 
 QVector<QVariant> NodeValue::split_normal_value_into_track_values(Type type, const QVariant &value)
@@ -352,18 +298,80 @@ QString NodeValue::GetPrettyDataTypeName(Type type)
     return QCoreApplication::translate("NodeValue", "Video Parameters");
   case kAudioParams:
     return QCoreApplication::translate("NodeValue", "Audio Parameters");
+  case kSubtitleParams:
+    return QCoreApplication::translate("NodeValue", "Subtitle Parameters");
 
-  case kFootageJob:
-  case kShaderJob:
-  case kSampleJob:
-  case kGenerateJob:
+  case kDataTypeCount:
     break;
   }
 
   return QCoreApplication::translate("NodeValue",  "Unknown");
 }
 
-NodeValue NodeValueTable::GetWithMeta(const QVector<NodeValue::Type> &type, const QString &tag) const
+QString NodeValue::GetDataTypeName(Type type)
+{
+  switch (type) {
+  case kNone:
+    return QStringLiteral("none");
+  case kInt:
+    return QStringLiteral("int");
+  case kCombo:
+    return QStringLiteral("combo");
+  case kFloat:
+    return QStringLiteral("float");
+  case kRational:
+    return QStringLiteral("rational");
+  case kBoolean:
+    return QStringLiteral("bool");
+  case kColor:
+    return QStringLiteral("color");
+  case kMatrix:
+    return QStringLiteral("matrix");
+  case kText:
+    return QStringLiteral("text");
+  case kFont:
+    return QStringLiteral("font");
+  case kFile:
+    return QStringLiteral("file");
+  case kTexture:
+    return QStringLiteral("texture");
+  case kSamples:
+    return QStringLiteral("samples");
+  case kVec2:
+    return QStringLiteral("vec2");
+  case kVec3:
+    return QStringLiteral("vec3");
+  case kVec4:
+    return QStringLiteral("vec4");
+  case kBezier:
+    return QStringLiteral("bezier");
+  case kVideoParams:
+    return QStringLiteral("vparam");
+  case kAudioParams:
+    return QStringLiteral("aparam");
+  case kSubtitleParams:
+    return QStringLiteral("sparam");
+  case kDataTypeCount:
+    break;
+  }
+
+  return QString();
+}
+
+NodeValue::Type NodeValue::GetDataTypeFromName(const QString &n)
+{
+  // Slow but easy to maintain
+  for (int i=0; i<kDataTypeCount; i++) {
+    Type t = static_cast<Type>(i);
+    if (GetDataTypeName(t) == n) {
+      return t;
+    }
+  }
+
+  return NodeValue::kNone;
+}
+
+NodeValue NodeValueTable::Get(const QVector<NodeValue::Type> &type, const QString &tag) const
 {
   int value_index = GetValueIndex(type, tag);
 
@@ -374,7 +382,7 @@ NodeValue NodeValueTable::GetWithMeta(const QVector<NodeValue::Type> &type, cons
   return NodeValue();
 }
 
-NodeValue NodeValueTable::TakeWithMeta(const QVector<NodeValue::Type> &type, const QString &tag)
+NodeValue NodeValueTable::Take(const QVector<NodeValue::Type> &type, const QString &tag)
 {
   int value_index = GetValueIndex(type, tag);
 

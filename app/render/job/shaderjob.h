@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -22,8 +22,10 @@
 #define SHADERJOB_H
 
 #include <QMatrix4x4>
+#include <QVector>
 
 #include "generatejob.h"
+#include "render/colorprocessor.h"
 #include "render/texture.h"
 
 namespace olive {
@@ -34,6 +36,7 @@ public:
   {
     iterations_ = 1;
     iterative_input_ = nullptr;
+    will_change_image_size_ = true;
   }
 
   const QString& GetShaderID() const
@@ -87,6 +90,19 @@ public:
     interpolation_.insert(id, interp);
   }
 
+  void SetVertexCoordinates(const QVector<float> &vertex_coords)
+  {
+    vertex_overrides_ = vertex_coords;
+  }
+
+  const QVector<float>& GetVertexCoordinates()
+  {
+    return vertex_overrides_;
+  }
+
+  bool GetWillChangeImageSize() const { return will_change_image_size_; }
+  void SetWillChangeImageSize(bool e) { will_change_image_size_ = e; }
+
 private:
   QString shader_id_;
 
@@ -95,6 +111,10 @@ private:
   QString iterative_input_;
 
   QHash<QString, Texture::Interpolation> interpolation_;
+
+  QVector<float> vertex_overrides_;
+
+  bool will_change_image_size_;
 
 };
 

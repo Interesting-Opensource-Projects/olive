@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@
 #include <QDebug>
 #include <QDesktopWidget>
 #include <QMessageBox>
+#include <QScreen>
 
 #ifdef Q_OS_LINUX
 #include <QOffscreenSurface>
@@ -32,6 +33,7 @@
 #include "dialog/about/about.h"
 #include "mainmenu.h"
 #include "mainstatusbar.h"
+#include "widget/timelinewidget/undo/timelineundoworkarea.h"
 
 namespace olive {
 
@@ -43,7 +45,9 @@ MainWindow::MainWindow(QWidget *parent) :
   //   window beforehand works around that issue and we just set it to whatever size is available.
   // * On Linux, it seems the window starts off at a vastly different size and then maximizes
   //   which throws off the proportions and makes the resulting layout wonky.
-  resize(qApp->desktop()->availableGeometry(this).size());
+  if (!qApp->screens().empty()) {
+    resize(qApp->screens().at(0)->availableSize());
+  }
 
 #ifdef Q_OS_WINDOWS
   // Set up taskbar button progress bar (used for some modal tasks like exporting)
@@ -93,14 +97,13 @@ MainWindow::MainWindow(QWidget *parent) :
   scope_panel_ = new ScopePanel(this);
 
   // Make node-related connections
-  connect(node_panel_, &NodePanel::NodesSelected, param_panel_, &ParamPanel::SelectNodes);
-  connect(node_panel_, &NodePanel::NodesDeselected, param_panel_, &ParamPanel::DeselectNodes);
-  connect(node_panel_, &NodePanel::NodeGroupOpenRequested, this, &MainWindow::NodeGroupRequested);
-  connect(param_panel_, &ParamPanel::RequestSelectNode, this, [this](const QVector<Node*>& target){
-    node_panel_->Select(target, true);
-  });
+  connect(node_panel_, &NodePanel::NodeSelectionChangedWithContexts, param_panel_, &ParamPanel::SetSelectedNodes);
+  connect(node_panel_, &NodePanel::NodeGroupOpened, this, &MainWindow::NodePanelGroupOpenedOrClosed);
+  connect(node_panel_, &NodePanel::NodeGroupClosed, this, &MainWindow::NodePanelGroupOpenedOrClosed);
   connect(param_panel_, &ParamPanel::FocusedNodeChanged, sequence_viewer_panel_, &ViewerPanel::SetGizmos);
+  connect(param_panel_, &ParamPanel::RequestViewerToStartEditingText, sequence_viewer_panel_, &ViewerPanel::RequestStartEditingText);
   connect(param_panel_, &ParamPanel::FocusedNodeChanged, curve_panel_, &CurvePanel::SetNode);
+  connect(param_panel_, &ParamPanel::SelectedNodesChanged, node_panel_, &NodePanel::Select);
 
   // Connect time signals together
   connect(sequence_viewer_panel_, &SequenceViewerPanel::TimeChanged, param_panel_, &ParamPanel::SetTime);
@@ -456,15 +459,10 @@ void MainWindow::StatusBarDoubleClicked()
   task_man_panel_->raise();
 }
 
-void MainWindow::NodeGroupRequested(NodeGroup *group)
+void MainWindow::NodePanelGroupOpenedOrClosed()
 {
-  NodePanel *panel = new NodePanel(this);
-  panel->setFloating(true);
-  panel->setVisible(true);
-  panel->SetContexts({group});
-  panel->SetSignalInsteadOfClose(true);
-  addDockWidget(Qt::LeftDockWidgetArea, panel);
-  connect(panel, &NodePanel::CloseRequested, panel, &NodePanel::deleteLater);
+  NodePanel *p = static_cast<NodePanel*>(sender());
+  param_panel_->SetContexts(p->GetContexts());
 }
 
 void MainWindow::TimelinePanelSelectionChanged(const QVector<Block *> &blocks)
@@ -478,10 +476,33 @@ void MainWindow::TimelinePanelSelectionChanged(const QVector<Block *> &blocks)
 
 void MainWindow::ShowWelcomeDialog()
 {
-  if (Config::Current()[QStringLiteral("ShowWelcomeDialog")].toBool()) {
+  if (OLIVE_CONFIG("ShowWelcomeDialog").toBool()) {
     AboutDialog ad(true, this);
     ad.exec();
   }
+}
+
+void MainWindow::RevealViewerInProject(ViewerOutput *r)
+{
+  foreach (ProjectPanel *p, project_panels_) {
+    if (p->project() == r->project() && p->SelectItem(r)) {
+      break;
+    }
+  }
+}
+
+void MainWindow::RevealViewerInFootageViewer(ViewerOutput *r, const TimeRange &range)
+{
+  footage_viewer_panel_->ConnectViewerNode(r);
+
+  auto command = new MultiUndoCommand();
+  if (!r->GetWorkArea()->enabled()) {
+    command->add_child(new WorkareaSetEnabledCommand(r->project(), r->GetWorkArea(), true));
+  }
+  command->add_child(new WorkareaSetRangeCommand(r->GetWorkArea(), range));
+  Core::instance()->undo_stack()->push(command);
+
+  footage_viewer_panel_->SetTime(range.in());
 }
 
 #ifdef Q_OS_LINUX
@@ -560,7 +581,10 @@ TimelinePanel* MainWindow::AppendTimelinePanel()
   connect(panel, &TimelinePanel::TimeChanged, curve_panel_, &ParamPanel::SetTime);
   connect(panel, &TimelinePanel::TimeChanged, param_panel_, &ParamPanel::SetTime);
   connect(panel, &TimelinePanel::TimeChanged, sequence_viewer_panel_, &SequenceViewerPanel::SetTime);
+  connect(panel, &TimelinePanel::RequestCaptureStart, sequence_viewer_panel_, &SequenceViewerPanel::StartCapture);
   connect(panel, &TimelinePanel::BlockSelectionChanged, this, &MainWindow::TimelinePanelSelectionChanged);
+  connect(panel, &TimelinePanel::RevealViewerInProject, this, &MainWindow::RevealViewerInProject);
+  connect(panel, &TimelinePanel::RevealViewerInFootageViewer, this, &MainWindow::RevealViewerInFootageViewer);
   connect(param_panel_, &ParamPanel::TimeChanged, panel, &TimelinePanel::SetTime);
   connect(curve_panel_, &ParamPanel::TimeChanged, panel, &TimelinePanel::SetTime);
   connect(sequence_viewer_panel_, &SequenceViewerPanel::TimeChanged, panel, &TimelinePanel::SetTime);
@@ -748,10 +772,7 @@ void MainWindow::FocusedPanelChanged(PanelWidget *panel)
     const QVector<Node*> &new_ctxs = node_panel->GetContexts();
 
     if (new_ctxs != param_panel_->GetContexts()) {
-      bool is_default_node_panel = node_panel == node_panel_;
-      param_panel_->SetIgnoreNodeFlags(!is_default_node_panel);
-      param_panel_->SetCreateCheckBoxes(is_default_node_panel ? kNoCheckBoxes : kCheckBoxesOnNonConnected);
-      param_panel_->SetContexts(node_panel->GetContexts());
+      param_panel_->SetContexts(new_ctxs);
     }
   } else if (TimelinePanel* timeline = dynamic_cast<TimelinePanel*>(panel)) {
     // Signal timeline focus

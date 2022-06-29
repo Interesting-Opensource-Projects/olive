@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -55,6 +55,7 @@ QIcon icon::ToolSlip;
 QIcon icon::ToolSlide;
 QIcon icon::ToolHand;
 QIcon icon::ToolTransition;
+QIcon icon::ToolTrackSelect;
 QIcon icon::Folder;
 QIcon icon::Sequence;
 QIcon icon::Video;
@@ -65,6 +66,15 @@ QIcon icon::TriUp;
 QIcon icon::TriLeft;
 QIcon icon::TriDown;
 QIcon icon::TriRight;
+QIcon icon::TextBold;
+QIcon icon::TextItalic;
+QIcon icon::TextUnderline;
+QIcon icon::TextStrikethrough;
+QIcon icon::TextSmallCaps;
+QIcon icon::TextAlignLeft;
+QIcon icon::TextAlignRight;
+QIcon icon::TextAlignCenter;
+QIcon icon::TextAlignJustify;
 QIcon icon::Snapping;
 QIcon icon::ZoomIn;
 QIcon icon::ZoomOut;
@@ -77,6 +87,12 @@ QIcon icon::Diamond;
 QIcon icon::Plus;
 QIcon icon::Minus;
 QIcon icon::AddEffect;
+QIcon icon::EyeOpened;
+QIcon icon::EyeClosed;
+QIcon icon::LockOpened;
+QIcon icon::LockClosed;
+QIcon icon::Pencil;
+QIcon icon::Subtitles;
 
 void icon::LoadAll(const QString& theme)
 {
@@ -105,6 +121,7 @@ void icon::LoadAll(const QString& theme)
   ToolSlide = Create(theme, "slide");
   ToolHand = Create(theme, "hand");
   ToolTransition = Create(theme, "transition-tool");
+  ToolTrackSelect = Create(theme, "track-tool");
 
   Folder = Create(theme, "folder");
   Sequence = Create(theme, "sequence");
@@ -119,6 +136,16 @@ void icon::LoadAll(const QString& theme)
   TriDown = Create(theme, "tri-down");
   TriRight = Create(theme, "tri-right");
 
+  TextBold = Create(theme, "text-bold");
+  TextItalic = Create(theme, "text-italic");
+  TextUnderline = Create(theme, "text-underline");
+  TextStrikethrough = Create(theme, "text-strikethrough");
+  TextSmallCaps = Create(theme, "text-small-caps");
+  TextAlignLeft = Create(theme, "align-left");
+  TextAlignRight = Create(theme, "align-right");
+  TextAlignCenter = Create(theme, "align-center");
+  TextAlignJustify = Create(theme, "align-justify-all");
+
   Snapping = Create(theme, "magnet");
   ZoomIn = Create(theme, "zoomin");
   ZoomOut = Create(theme, "zoomout");
@@ -131,6 +158,14 @@ void icon::LoadAll(const QString& theme)
   Plus = Create(theme, "plus");
   Minus = Create(theme, "minus");
   AddEffect = Create(theme, "add-effect");
+
+  EyeOpened = Create(theme, "eye-opened");
+  EyeClosed = Create(theme, "eye-closed");
+  LockOpened = Create(theme, "lock-opened");
+  LockClosed = Create(theme, "lock-closed");
+
+  Pencil = Create(theme, "text-edit");
+  Subtitles = Create(theme, "subtitles");
 }
 
 QIcon icon::Create(const QString& theme, const QString &name)

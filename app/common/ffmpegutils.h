@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -22,6 +22,7 @@
 #define FFMPEGABSTRACTION_H
 
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 }
 
@@ -35,7 +36,7 @@ public:
   /**
    * @brief Returns an AVPixelFormat that can be used to convert a frame to a data type Olive supports with minimal data loss
    */
-  static AVPixelFormat GetCompatiblePixelFormat(const AVPixelFormat& pix_fmt);
+  static AVPixelFormat GetCompatiblePixelFormat(const AVPixelFormat& pix_fmt, VideoParams::Format maximum = VideoParams::kFormatInvalid);
 
   /**
    * @brief Returns a native pixel format that can be used to convert from a native frame to an AVFrame with minimal data loss
@@ -55,7 +56,7 @@ public:
   /**
    * @brief Returns an FFmpeg sample format type for a given native type
    */
-  static AVSampleFormat GetFFmpegSampleFormat(const AudioParams::Format &smp_fmt, bool planar = false);
+  static AVSampleFormat GetFFmpegSampleFormat(const AudioParams::Format &smp_fmt);
 };
 
 }

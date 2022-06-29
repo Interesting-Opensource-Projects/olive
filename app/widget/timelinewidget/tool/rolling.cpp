@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -33,10 +33,9 @@ RollingTool::RollingTool(TimelineWidget* parent) :
   SetGapTrimmingAllowed(true);
 }
 
-void RollingTool::InitiateDrag(Block *clicked_item,
-                                               Timeline::MovementMode trim_mode)
+void RollingTool::InitiateDrag(Block *clicked_item, Timeline::MovementMode trim_mode, Qt::KeyboardModifiers modifiers)
 {
-  InitiateDragInternal(clicked_item, trim_mode, false, true, false);
+  InitiateDragInternal(clicked_item, trim_mode, modifiers, false, true, false);
 }
 
 }

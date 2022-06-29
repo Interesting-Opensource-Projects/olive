@@ -1,5 +1,5 @@
 # Olive - Non-Linear Video Editor
-# Copyright (C) 2021 Olive Team
+# Copyright (C) 2022 Olive Team
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -32,6 +32,8 @@ set(OLIVE_SOURCES
   widget/viewer/viewersafemargininfo.h
   widget/viewer/viewersizer.cpp
   widget/viewer/viewersizer.h
+  widget/viewer/viewertexteditor.cpp
+  widget/viewer/viewertexteditor.h
   widget/viewer/viewerwindow.cpp
   widget/viewer/viewerwindow.h
   PARENT_SCOPE

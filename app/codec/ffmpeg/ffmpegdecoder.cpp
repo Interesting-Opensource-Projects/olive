@@ -1,7 +1,7 @@
 /***
 
   Olive - Non-Linear Video Editor
-  Copyright (C) 2021 Olive Team
+  Copyright (C) 2022 Olive Team
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ extern "C" {
 #include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 }
 
@@ -46,15 +47,22 @@ extern "C" {
 #include "common/timecodefunctions.h"
 #include "render/framehashcache.h"
 #include "render/diskmanager.h"
+#include "render/renderer.h"
+#include "render/subtitleparams.h"
 
 namespace olive {
+
+QVariant Yuv2RgbShader;
 
 FFmpegDecoder::FFmpegDecoder() :
   filter_graph_(nullptr),
   buffersrc_ctx_(nullptr),
   buffersink_ctx_(nullptr),
-  pool_(QThread::idealThreadCount()*2),
-  is_working_(false),
+  input_fmt_(AV_PIX_FMT_NONE),
+  native_internal_pix_fmt_(VideoParams::kFormatInvalid),
+  native_output_pix_fmt_(VideoParams::kFormatInvalid),
+  working_frame_(nullptr),
+  working_packet_(nullptr),
   cache_at_zero_(false),
   cache_at_eof_(false)
 {
@@ -68,21 +76,8 @@ bool FFmpegDecoder::OpenInternal()
     // Store one second in the source's timebase
     second_ts_ = qRound64(av_q2d(av_inv_q(s->time_base)));
 
-    if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      // Get an Olive compatible AVPixelFormat
-      ideal_pix_fmt_ = FFmpegUtils::GetCompatiblePixelFormat(static_cast<AVPixelFormat>(s->codecpar->format));
-
-      // Determine which Olive native pixel format we retrieved
-      // Note that FFmpeg doesn't support float formats
-      native_pix_fmt_ = GetNativePixelFormat(ideal_pix_fmt_);
-      native_channel_count_ = GetNativeChannelCount(ideal_pix_fmt_);
-
-      if (native_pix_fmt_ == VideoParams::kFormatInvalid
-          || native_channel_count_ == 0) {
-        qDebug() << "Failed to find valid native pixel format for" << ideal_pix_fmt_;
-        return false;
-      }
-    }
+    working_frame_ = av_frame_alloc();
+    working_packet_ = av_packet_alloc();
 
     return true;
   }
@@ -146,34 +141,122 @@ bool FFmpegDecoder::OpenInternal()
   return output_frame;
 }*/
 
-FramePtr FFmpegDecoder::RetrieveVideoInternal(const rational &timecode, const RetrieveVideoParams &params, const QAtomicInt *cancelled)
+TexturePtr FFmpegDecoder::RetrieveVideoInternal(Renderer *renderer, const rational &timecode, const RetrieveVideoParams &params, const QAtomicInt *cancelled)
 {
-  if (!InitScaler(params)) {
-    return nullptr;
-  }
+  if (AVFramePtr f = RetrieveFrame(timecode, cancelled)) {
+    if (cancelled && *cancelled) {
+      return nullptr;
+    }
 
-  AVStream* s = instance_.avstream();
+    if (InitScaler(f.get(), params)) {
+      VideoParams vp(instance_.avstream()->codecpar->width,
+                     instance_.avstream()->codecpar->height,
+                     native_output_pix_fmt_,
+                     native_channel_count_,
+                     av_guess_sample_aspect_ratio(instance_.fmt_ctx(), instance_.avstream(), nullptr),
+                     VideoParams::kInterlaceNone,
+                     params.divider);
 
-  // Retrieve frame
-  FFmpegFramePool::ElementPtr return_frame = RetrieveFrame(timecode, cancelled);
+      TexturePtr tex = nullptr;
+      const bool hwscale = true;
 
-  // We found the frame, we'll return a copy
-  if (return_frame) {
-    FramePtr copy = Frame::Create();
-    copy->set_video_params(VideoParams(s->codecpar->width,
-                                       s->codecpar->height,
-                                       native_pix_fmt_,
-                                       native_channel_count_,
-                                       av_guess_sample_aspect_ratio(instance_.fmt_ctx(), s, nullptr), // May be incorrect,
-                                       VideoParams::kInterlaceNone,
-                                       filter_params_.divider));
-    copy->set_timestamp(timecode);
-    copy->allocate();
+      // Attempt to use GLSL shader for faster YUV to RGB conversion
+      if (hwscale) {
+        AVPixelFormat src_fmt = AVPixelFormat(f.get()->format);
+        if (src_fmt == AV_PIX_FMT_YUV420P
+            || src_fmt == AV_PIX_FMT_YUV422P
+            || src_fmt == AV_PIX_FMT_YUV444P
+            || src_fmt == AV_PIX_FMT_YUV420P10LE
+            || src_fmt == AV_PIX_FMT_YUV422P10LE
+            || src_fmt == AV_PIX_FMT_YUV444P10LE
+            || src_fmt == AV_PIX_FMT_YUV420P12LE
+            || src_fmt == AV_PIX_FMT_YUV422P12LE
+            || src_fmt == AV_PIX_FMT_YUV444P12LE) {
+          if (Yuv2RgbShader.isNull()) {
+            // Compile shader
+            Yuv2RgbShader = renderer->CreateNativeShader(ShaderCode(FileFunctions::ReadFileAsString(QStringLiteral(":/shaders/yuv2rgb.frag"))));
+          }
 
-    // This data will already match the frame
-    memcpy(copy->data(), return_frame->data(), copy->allocated_size());
+          if (!Yuv2RgbShader.isNull()) {
+            int px_size;
+            int bits_per_pixel;
+            switch (src_fmt) {
+            case AV_PIX_FMT_YUV420P:
+            case AV_PIX_FMT_YUV422P:
+            case AV_PIX_FMT_YUV444P:
+            default:
+              px_size = 1;
+              bits_per_pixel = 8;
+              break;
+            case AV_PIX_FMT_YUV420P10LE:
+            case AV_PIX_FMT_YUV422P10LE:
+            case AV_PIX_FMT_YUV444P10LE:
+              px_size = 2;
+              bits_per_pixel = 10;
+              break;
+            case AV_PIX_FMT_YUV420P12LE:
+            case AV_PIX_FMT_YUV422P12LE:
+            case AV_PIX_FMT_YUV444P12LE:
+              px_size = 2;
+              bits_per_pixel = 12;
+              break;
+            }
 
-    return copy;
+            VideoParams plane_params = vp;
+            plane_params.set_channel_count(1);
+            plane_params.set_divider(1);
+            plane_params.set_format(native_internal_pix_fmt_);
+            TexturePtr y_plane = renderer->CreateTexture(plane_params, f->data[0], f->linesize[0] / px_size);
+
+            if (src_fmt == AV_PIX_FMT_YUV420P
+                || src_fmt == AV_PIX_FMT_YUV422P
+                || src_fmt == AV_PIX_FMT_YUV420P10LE
+                || src_fmt == AV_PIX_FMT_YUV422P10LE
+                || src_fmt == AV_PIX_FMT_YUV420P12LE
+                || src_fmt == AV_PIX_FMT_YUV422P12LE) {
+              plane_params.set_width(plane_params.width()/2);
+            }
+
+            if (src_fmt == AV_PIX_FMT_YUV420P
+                || src_fmt == AV_PIX_FMT_YUV420P10LE
+                || src_fmt == AV_PIX_FMT_YUV420P12LE) {
+              plane_params.set_height(plane_params.height()/2);
+            }
+
+            TexturePtr u_plane = renderer->CreateTexture(plane_params, f->data[1], f->linesize[1] / px_size);
+            TexturePtr v_plane = renderer->CreateTexture(plane_params, f->data[2], f->linesize[2] / px_size);
+
+            ShaderJob job;
+            job.Insert(QStringLiteral("y_channel"), NodeValue(NodeValue::kTexture, QVariant::fromValue(y_plane)));
+            job.Insert(QStringLiteral("u_channel"), NodeValue(NodeValue::kTexture, QVariant::fromValue(u_plane)));
+            job.Insert(QStringLiteral("v_channel"), NodeValue(NodeValue::kTexture, QVariant::fromValue(v_plane)));
+            job.Insert(QStringLiteral("bits_per_pixel"), NodeValue(NodeValue::kInt, bits_per_pixel));
+
+            tex = renderer->CreateTexture(vp);
+            renderer->BlitToTexture(Yuv2RgbShader, job, tex.get(), false);
+          }
+        }
+      }
+
+      if (!tex) {
+        // Fallback to software pixel format conversion
+        int r;
+        r = av_buffersrc_add_frame_flags(buffersrc_ctx_, f.get(), AV_BUFFERSRC_FLAG_KEEP_REF);
+        if (r < 0) {
+          return nullptr;
+        }
+        r = av_buffersink_get_frame(buffersink_ctx_, working_frame_);
+        if (r < 0) {
+          return nullptr;
+        }
+
+        tex = renderer->CreateTexture(vp, working_frame_->data[0], working_frame_->linesize[0] / vp.GetBytesPerPixel());
+
+        av_frame_unref(working_frame_);
+      }
+
+      return tex;
+    }
   }
 
   return nullptr;
@@ -181,56 +264,24 @@ FramePtr FFmpegDecoder::RetrieveVideoInternal(const rational &timecode, const Re
 
 void FFmpegDecoder::CloseInternal()
 {
-  ClearFrameCache();
-
-  instance_.Close();
-}
-
-int FFmpegDecoder::GetFilteredFrame(AVPacket* packet, AVFrame* output_frame)
-{
-  // Ensure scaler is correct for these parameters
-  int ret;
-
-  AVFrame* working_frame = av_frame_alloc();
-
-  // Try to pull frame from buffersink
-  while ((ret = av_buffersink_get_frame(buffersink_ctx_, output_frame)) == AVERROR(EAGAIN)) {
-    // If no frame is ready in the buffersink, pull from codec
-    ret = instance_.GetFrame(packet, working_frame);
-
-    if (ret >= 0) {
-      // Override this frame's interlacing parameters from user
-      switch (filter_params_.src_interlacing) {
-      case VideoParams::kInterlaceNone:
-        working_frame->interlaced_frame = 0;
-        break;
-      case VideoParams::kInterlacedTopFirst:
-        working_frame->interlaced_frame = 1;
-        working_frame->top_field_first = 1;
-        break;
-      case VideoParams::kInterlacedBottomFirst:
-        working_frame->interlaced_frame = 1;
-        working_frame->top_field_first = 0;
-        break;
-      }
-
-      // If succeeded in pulling from codec, send to buffer source
-      ret = av_buffersrc_add_frame_flags(buffersrc_ctx_, working_frame, AV_BUFFERSRC_FLAG_KEEP_REF);
-
-      if (ret < 0) {
-        // If failed to send to buffer source, return break and error code
-        qDebug() << "Failed to feed filter graph:" << FFmpegError(ret);
-        break;
-      }
-    } else {
-      // If failed to read from decoder, return break and error code
-      break;
-    }
+  if (working_packet_) {
+    av_packet_free(&working_packet_);
+    working_packet_ = nullptr;
   }
 
-  av_frame_free(&working_frame);
+  if (working_frame_) {
+    av_frame_free(&working_frame_);
+    working_frame_ = nullptr;
+  }
 
-  return ret;
+  ClearFrameCache();
+  FreeScaler();
+
+  instance_.Close();
+
+  input_fmt_ = AV_PIX_FMT_NONE;
+  native_internal_pix_fmt_ = VideoParams::kFormatInvalid;
+  native_output_pix_fmt_ = VideoParams::kFormatInvalid;
 }
 
 QString FFmpegDecoder::id() const
@@ -268,7 +319,7 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
       AVStream* avstream = fmt_ctx->streams[i];
 
       // Find decoder for this stream, if it exists we can proceed
-      AVCodec* decoder = avcodec_find_decoder(avstream->codecpar->codec_id);
+      const AVCodec* decoder = avcodec_find_decoder(avstream->codecpar->codec_id);
 
       if (decoder
           && (avstream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
@@ -276,6 +327,8 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
               || avstream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)) {
 
         if (avstream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+
+          AVPixelFormat compatible_pix_fmt = AV_PIX_FMT_NONE;
 
           bool image_is_still = false;
           rational pixel_aspect_ratio;
@@ -309,6 +362,8 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
                 frame_rate = av_guess_frame_rate(instance.fmt_ctx(),
                                                  instance.avstream(),
                                                  frame);
+
+                compatible_pix_fmt = FFmpegUtils::GetCompatiblePixelFormat(static_cast<AVPixelFormat>(avstream->codecpar->format));
               }
 
               // Read second frame
@@ -323,7 +378,7 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
                     int64_t new_dur;
 
                     do {
-                      new_dur = frame->pts;
+                      new_dur = frame->best_effort_timestamp;
                     } while (instance.GetFrame(pkt, frame) >= 0);
 
                     avstream->duration = new_dur;
@@ -346,8 +401,6 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
             av_frame_free(&frame);
             av_packet_free(&pkt);
           }
-
-          AVPixelFormat compatible_pix_fmt = FFmpegUtils::GetCompatiblePixelFormat(static_cast<AVPixelFormat>(avstream->codecpar->format));
 
           VideoParams stream;
           stream.set_stream_index(i);
@@ -388,7 +441,7 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
               int64_t new_dur;
 
               do {
-                new_dur = frame->pts;
+                new_dur = frame->best_effort_timestamp;
               } while (instance.GetFrame(pkt, frame) >= 0);
 
               avstream->duration = new_dur;
@@ -415,7 +468,30 @@ FootageDescription FFmpegDecoder::Probe(const QString &filename, const QAtomicIn
 
         } else if (avstream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
 
-          qDebug() << "Subtitle probing: Stub";
+          // Limit to SRT for now...
+          if (avstream->codecpar->codec_id == AV_CODEC_ID_SUBRIP) {
+            SubtitleParams sub;
+
+            AVPacket* pkt = av_packet_alloc();
+            {
+              Instance instance;
+              instance.Open(filename_c, avstream->index);
+
+              while (instance.GetPacket(pkt) >= 0) {
+                TimeRange time(Timecode::timestamp_to_time(pkt->pts, avstream->time_base),
+                               Timecode::timestamp_to_time(pkt->pts + pkt->duration, avstream->time_base));
+
+                QString text = QString::fromUtf8((const char *) pkt->data, pkt->size);
+
+                sub.push_back(Subtitle(time, text));
+              }
+
+              instance.Close();
+            }
+            av_packet_free(&pkt);
+
+            desc.AddSubtitleStream(sub);
+          }
 
         }
 
@@ -455,7 +531,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QVector<QString> &filenames, cons
   // Create resampling context
   SwrContext* resampler = swr_alloc_set_opts(nullptr,
                                              params.channel_layout(),
-                                             FFmpegUtils::GetFFmpegSampleFormat(params.format(), true),
+                                             FFmpegUtils::GetFFmpegSampleFormat(params.format()),
                                              params.sample_rate(),
                                              channel_layout,
                                              static_cast<AVSampleFormat>(instance_.avstream()->codecpar->format),
@@ -515,7 +591,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QVector<QString> &filenames, cons
 
       // Resample audio to our destination parameters
       nb_samples = swr_convert(resampler,
-                               reinterpret_cast<uint8_t**>(data.to_raw_ptrs()),
+                               reinterpret_cast<uint8_t**>(data.to_raw_ptrs().data()),
                                nb_samples,
                                const_cast<const uint8_t**>(frame->data),
                                frame->nb_samples);
@@ -526,7 +602,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QVector<QString> &filenames, cons
         nb_bytes_per_channel = params.samples_to_bytes(nb_samples) / nb_channels;
 
         // Write to files
-        wave_out.write(const_cast<const char**>(reinterpret_cast<char**>(data.to_raw_ptrs())), nb_bytes_per_channel);
+        wave_out.write(const_cast<const char**>(reinterpret_cast<char**>(data.to_raw_ptrs().data())), nb_bytes_per_channel);
       }
 
       // Free buffer
@@ -540,7 +616,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QVector<QString> &filenames, cons
         break;
       }
 
-      SignalProcessingProgress(frame->pts, duration);
+      SignalProcessingProgress(frame->best_effort_timestamp, duration);
     }
 
     wave_out.close();
@@ -661,36 +737,29 @@ void FFmpegDecoder::CacheFrameToDisk(AVFrame *f)
 
 void FFmpegDecoder::ClearFrameCache()
 {
-  if (!cached_frames_.isEmpty()) {
+  if (!cached_frames_.empty()) {
     cached_frames_.clear();
     cache_at_eof_ = false;
     cache_at_zero_ = false;
-
-    // Filter graph may rely on "continuous" video frames, so we free the scaler here
-    FreeScaler();
-    InitScaler(filter_params_);
   }
 }
 
-FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, const QAtomicInt *cancelled)
+AVFramePtr FFmpegDecoder::RetrieveFrame(const rational& time, const QAtomicInt *cancelled)
 {
   int64_t target_ts = GetTimeInTimebaseUnits(time, instance_.avstream()->time_base, instance_.avstream()->start_time);
 
   const int64_t min_seek = -instance_.avstream()->start_time;
-  int64_t seek_ts = target_ts;
+  int64_t seek_ts = std::max(min_seek, target_ts - MaximumQueueSize());
   bool still_seeking = false;
-
-  if (filter_params_.src_interlacing != VideoParams::kInterlaceNone) {
-    // If we are de-interlacing, the timebase is doubled because we get one frame per field, so we
-    // double the target timestamp too
-    target_ts *= 2;
-  }
 
   if (time != kAnyTimecode) {
     // If the frame wasn't in the frame cache, see if this frame cache is too old to use
-    if (cached_frames_.isEmpty()
-        || (target_ts < cached_frames_.first()->timestamp() || target_ts > cached_frames_.last()->timestamp() + 2*second_ts_)) {
+    if (cached_frames_.empty()
+        || (target_ts < cached_frames_.front()->pts || target_ts > cached_frames_.back()->pts + 2*second_ts_)) {
       ClearFrameCache();
+
+      // Filter graph may rely on "continuous" video frames, so we free the scaler here
+      //ResetScaler();
 
       instance_.Seek(seek_ts);
       if (seek_ts == min_seek) {
@@ -700,7 +769,7 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
       still_seeking = true;
     } else {
       // Search cache for frame
-      FFmpegFramePool::ElementPtr cached_frame = GetFrameFromCache(target_ts);
+      AVFramePtr cached_frame = GetFrameFromCache(target_ts);
       if (cached_frame) {
         return cached_frame;
       }
@@ -708,11 +777,8 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
   }
 
   int ret;
-  AVPacket* pkt = av_packet_alloc();
-  FFmpegFramePool::ElementPtr return_frame = nullptr;
-
-  // Allocate a new frame
-  AVFrame* working_frame = av_frame_alloc();
+  AVFramePtr return_frame = nullptr;
+  AVFramePtr filtered = nullptr;
 
   while (true) {
     // Break out of loop if we've cancelled
@@ -720,9 +786,16 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
       break;
     }
 
+    if (!filtered) {
+      filtered = CreateAVFramePtr(av_frame_alloc());
+    }
+
     // Pull from the decoder
-    av_frame_unref(working_frame);
-    ret = GetFilteredFrame(pkt, working_frame);
+    ret = instance_.GetFrame(working_packet_, filtered.get());
+
+    if (cancelled && *cancelled) {
+      break;
+    }
 
     // Handle any errors that aren't EOF (EOF is handled later on)
     if (ret < 0 && ret != AVERROR_EOF) {
@@ -733,7 +806,7 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
     if (still_seeking) {
       // Handle a failure to seek (occurs on some media)
       // We'll only be here if the frame cache was emptied earlier
-      if (!cache_at_zero_ && (ret == AVERROR_EOF || working_frame->pts > target_ts)) {
+      if (!cache_at_zero_ && (ret == AVERROR_EOF || filtered->best_effort_timestamp > target_ts)) {
 
         seek_ts = qMax(min_seek, seek_ts - second_ts_);
         instance_.Seek(seek_ts);
@@ -749,16 +822,15 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
       }
     }
 
-
     if (ret == AVERROR_EOF) {
 
       // Handle an "expected" EOF by using the last frame of our cache
       cache_at_eof_ = true;
 
-      if (cached_frames_.isEmpty()) {
+      if (cached_frames_.empty()) {
         qCritical() << "Unexpected codec EOF - unable to retrieve frame";
       } else {
-        return_frame = cached_frames_.last();
+        return_frame = cached_frames_.back();
       }
 
       break;
@@ -766,44 +838,28 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
     } else {
 
       // Cut down to thread count - 1 before we acquire a new frame
-      if (cached_frames_.size() == QThread::idealThreadCount()) {
+      if (cached_frames_.size() > size_t(MaximumQueueSize())) {
         RemoveFirstFrame();
       }
 
-      FFmpegFramePool::ElementPtr cached = pool_.Get();
-
-      if (!cached) {
-        qCritical() << "Frame pool failed to return a valid frame - out of memory?";
-        break;
-      }
-
-      // Store in queue, converting to native format
-      uint8_t* destination_data = cached->data();
-      int destination_linesize = Frame::generate_linesize_bytes(working_frame->width, native_pix_fmt_, native_channel_count_);
-
-      av_image_copy(&destination_data, &destination_linesize, const_cast<const uint8_t**>(working_frame->data), working_frame->linesize, static_cast<AVPixelFormat>(working_frame->format), working_frame->width, working_frame->height);
-
-      // Set timestamp so this frame can be identified later
-      cached->set_timestamp(working_frame->pts);
-
       // Store frame before just in case
-      FFmpegFramePool::ElementPtr previous;
-      if (cached_frames_.isEmpty()) {
+      AVFramePtr previous;
+      if (cached_frames_.empty()) {
         previous = nullptr;
       } else {
-        previous = cached_frames_.last();
+        previous = cached_frames_.back();
       }
 
       // Append this frame and signal to other threads that a new frame has arrived
-      cached_frames_.append(cached);
+      cached_frames_.push_back(filtered);
 
       // If this is a valid frame, see if this or the frame before it are the one we need
-      if (cached->timestamp() == target_ts || time == kAnyTimecode) {
-        return_frame = cached;
+      if (filtered->pts == target_ts || time == kAnyTimecode) {
+        return_frame = filtered;
         break;
-      } else if (cached->timestamp() > target_ts) {
+      } else if (filtered->pts > target_ts) {
         if (!previous && cache_at_zero_) {
-          return_frame = cached;
+          return_frame = filtered;
           break;
         } else {
           return_frame = previous;
@@ -811,26 +867,50 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, c
         }
       }
     }
+
+    filtered = nullptr;
   }
 
-  av_frame_free(&working_frame);
-  av_packet_free(&pkt);
+  av_packet_unref(working_packet_);
 
   return return_frame;
 }
 
-bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
+bool FFmpegDecoder::InitScaler(AVFrame *input, const RetrieveVideoParams& params)
 {
-  if (params == filter_params_ && filter_graph_) {
+  if (params == filter_params_ && filter_graph_ && input_fmt_ == input->format) {
     // We have an appropriate filter for these parameters, just return true
     return true;
   }
 
   // We need to (re)create the filter, delete current if necessary
   ClearFrameCache();
+  FreeScaler();
 
   // Set our params to this
   filter_params_ = params;
+  input_fmt_ = static_cast<AVPixelFormat>(input->format);
+  if (input_fmt_ == AV_PIX_FMT_NONE) {
+    return false;
+  }
+
+  // Get an Olive compatible AVPixelFormat
+  AVPixelFormat ideal_pix_fmt = FFmpegUtils::GetCompatiblePixelFormat(static_cast<AVPixelFormat>(input_fmt_), params.maximum_format);
+
+  // Determine which Olive native pixel format we retrieved
+  // Note that FFmpeg doesn't support float formats
+  native_output_pix_fmt_ = GetNativePixelFormat(ideal_pix_fmt);
+  native_channel_count_ = GetNativeChannelCount(ideal_pix_fmt);
+
+  AVPixelFormat ideal_internal_pix_fmt = FFmpegUtils::GetCompatiblePixelFormat(static_cast<AVPixelFormat>(input_fmt_));
+  native_internal_pix_fmt_ = GetNativePixelFormat(ideal_internal_pix_fmt);
+
+  if (native_output_pix_fmt_ == VideoParams::kFormatInvalid
+      || native_internal_pix_fmt_ == VideoParams::kFormatInvalid
+      || native_channel_count_ == 0) {
+    qCritical() << "Failed to find valid native pixel format for" << ideal_pix_fmt;
+    return false;
+  }
 
   // Allocate filter graph
   filter_graph_ = avfilter_graph_alloc();
@@ -850,7 +930,7 @@ bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
   snprintf(filter_args, kFilterArgSz, "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
            src_width,
            src_height,
-           s->codecpar->format,
+           input->format,
            s->time_base.num,
            s->time_base.den,
            s->codecpar->sample_aspect_ratio.num,
@@ -863,19 +943,6 @@ bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
   // Link filters as necessary
   AVFilterContext *last_filter = buffersrc_ctx_;
 
-  // Add interlacing filter if necessary
-  if (filter_params_.src_interlacing != VideoParams::kInterlaceNone) {
-    // Footage is interlaced, our renderer works in progressive so we'll need to de-interlace
-    AVFilterContext* interlace_filter;
-
-    snprintf(filter_args, kFilterArgSz, "mode=1:parity=%s",
-             GetInterlacingModeInFFmpeg(filter_params_.src_interlacing));
-    avfilter_graph_create_filter(&interlace_filter, avfilter_get_by_name("yadif"), "yadif", filter_args, nullptr, filter_graph_);
-
-    avfilter_link(last_filter, 0, interlace_filter, 0);
-    last_filter = interlace_filter;
-  }
-
   // Add scale filter if necessary
   int dst_width, dst_height;
   if (filter_params_.divider > 1) {
@@ -884,10 +951,9 @@ bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
     dst_width = VideoParams::GetScaledDimension(src_width, filter_params_.divider);
     dst_height = VideoParams::GetScaledDimension(src_height, filter_params_.divider);
 
-    snprintf(filter_args, kFilterArgSz, "w=%d:h=%d:flags=fast_bilinear:interl=%d",
+    snprintf(filter_args, kFilterArgSz, "w=%d:h=%d:flags=fast_bilinear:interl=-1",
              dst_width,
-             dst_height,
-             params.dst_interlacing != VideoParams::kInterlaceNone);
+             dst_height);
 
     avfilter_graph_create_filter(&scale_filter, avfilter_get_by_name("scale"), "scale", filter_args, nullptr, filter_graph_);
 
@@ -899,10 +965,10 @@ bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
   }
 
   // Add format filter if necessary
-  if (ideal_pix_fmt_ != s->codecpar->format) {
+  if (ideal_pix_fmt != input->format) {
     AVFilterContext* format_filter;
 
-    snprintf(filter_args, kFilterArgSz, "pix_fmts=%u", ideal_pix_fmt_);
+    snprintf(filter_args, kFilterArgSz, "pix_fmts=%u", ideal_pix_fmt);
 
     avfilter_graph_create_filter(&format_filter, avfilter_get_by_name("format"), "format", filter_args, nullptr, filter_graph_);
 
@@ -915,14 +981,8 @@ bool FFmpegDecoder::InitScaler(const RetrieveVideoParams& params)
 
   // Configure graph
   if (int ret = avfilter_graph_config(filter_graph_, nullptr) < 0) {
-    qDebug() << "Failed to configure graph:" << FFmpegError(ret);
+    qCritical() << "Failed to configure graph:" << FFmpegError(ret);
     return false;
-  }
-
-  // Configure frame pool
-  if (pool_.width() != dst_width || pool_.height() != dst_height) {
-    // Set new frame pool parameters
-    pool_.SetParameters(dst_width, dst_height, native_pix_fmt_, native_channel_count_);
   }
 
   return true;
@@ -938,32 +998,32 @@ void FFmpegDecoder::FreeScaler()
   }
 }
 
-FFmpegFramePool::ElementPtr FFmpegDecoder::GetFrameFromCache(const int64_t &t) const
+AVFramePtr FFmpegDecoder::GetFrameFromCache(const int64_t &t) const
 {
-  if (t < cached_frames_.first()->timestamp()) {
+  if (t < cached_frames_.front()->pts) {
 
     if (cache_at_zero_) {
-      cached_frames_.first()->access();
-      return cached_frames_.first();
+      return cached_frames_.front();
     }
 
-  } else if (t > cached_frames_.last()->timestamp()) {
+  } else if (t > cached_frames_.back()->pts) {
 
     if (cache_at_eof_) {
-      cached_frames_.last()->access();
-      return cached_frames_.last();
+      return cached_frames_.back();
     }
 
   } else {
 
     // We already have this frame in the cache, find it
-    for (int i=0;i<cached_frames_.size();i++) {
-      FFmpegFramePool::ElementPtr this_frame = cached_frames_.at(i);
+    for (auto it=cached_frames_.cbegin(); it!=cached_frames_.cend(); it++) {
+      AVFramePtr this_frame = *it;
 
-      if (this_frame->timestamp() == t // Test for an exact match
-          || (i < cached_frames_.size() - 1 && cached_frames_.at(i+1)->timestamp() > t)) { // Or for this frame to be the "closest"
+      auto next = it;
+      next++;
 
-        this_frame->access();
+      if (this_frame->pts == t // Test for an exact match
+          || (next != cached_frames_.cend() && (*next)->pts > t)) { // Or for this frame to be the "closest"
+
         return this_frame;
 
       }
@@ -975,8 +1035,17 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::GetFrameFromCache(const int64_t &t) c
 
 void FFmpegDecoder::RemoveFirstFrame()
 {
-  cached_frames_.removeFirst();
+  cached_frames_.pop_front();
   cache_at_zero_ = false;
+}
+
+int FFmpegDecoder::MaximumQueueSize()
+{
+  // Fairly arbitrary size. This used to need to be the number of current threads to ensure any
+  // thread that arrived would have its frame available, but if we only have one render thread,
+  // that's no longer a concern. Now, this value could technically be 1, but some memory cache
+  // may be useful for reversing. This value may be tweaked over time.
+  return 2;
 }
 
 FFmpegDecoder::Instance::Instance() :
@@ -1010,7 +1079,7 @@ bool FFmpegDecoder::Instance::Open(const char *filename, int stream_index)
   avstream_ = fmt_ctx_->streams[stream_index];
 
   // Find decoder
-  AVCodec* codec = avcodec_find_decoder(avstream_->codecpar->codec_id);
+  const AVCodec* codec = avcodec_find_decoder(avstream_->codecpar->codec_id);
 
   // Handle failure to find decoder
   if (codec == nullptr) {
@@ -1087,13 +1156,7 @@ int FFmpegDecoder::Instance::GetFrame(AVPacket *pkt, AVFrame *frame)
   while ((ret = avcodec_receive_frame(codec_ctx_, frame)) == AVERROR(EAGAIN) && !eof) {
 
     // Find next packet in the correct stream index
-    do {
-      // Free buffer in packet if there is one
-      av_packet_unref(pkt);
-
-      // Read packet from file
-      ret = av_read_frame(fmt_ctx_, pkt);
-    } while (pkt->stream_index != avstream_->index && ret >= 0);
+    ret = GetPacket(pkt);
 
     if (ret == AVERROR_EOF) {
       // Don't break so that receive gets called again, but don't try to read again
@@ -1116,6 +1179,39 @@ int FFmpegDecoder::Instance::GetFrame(AVPacket *pkt, AVFrame *frame)
       }
     }
   }
+
+  return ret;
+}
+
+const char *FFmpegDecoder::Instance::GetSubtitleHeader() const
+{
+  return reinterpret_cast<const char*>(codec_ctx_->subtitle_header);
+}
+
+int FFmpegDecoder::Instance::GetSubtitle(AVPacket *pkt, AVSubtitle *sub)
+{
+  int ret = GetPacket(pkt);
+
+  if (ret >= 0) {
+    int got_sub;
+    ret = avcodec_decode_subtitle2(codec_ctx_, sub, &got_sub, pkt);
+    if (!got_sub) {
+      ret = -1;
+    }
+  }
+
+  return ret;
+}
+
+int FFmpegDecoder::Instance::GetPacket(AVPacket *pkt)
+{
+  int ret;
+
+  do {
+    av_packet_unref(pkt);
+
+    ret = av_read_frame(fmt_ctx_, pkt);
+  } while (pkt->stream_index != avstream_->index && ret >= 0);
 
   return ret;
 }
