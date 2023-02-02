@@ -24,7 +24,6 @@
 #include <QHBoxLayout>
 #include <QScrollBar>
 
-#include "common/rational.h"
 #include "widget/menu/menu.h"
 #include "widget/timebased/timebasedviewselectionmanager.h"
 
@@ -47,10 +46,13 @@ public:
   void SetMarkers(TimelineMarkerList *markers);
   void SetWorkArea(TimelineWorkArea *workarea);
 
-  bool IsDraggingPlayhead() const
+  virtual bool IsDraggingPlayhead() const override
   {
     return dragging_;
   }
+
+  bool IsMarkerEditingEnabled() const { return marker_editing_enabled_; }
+  void SetMarkerEditingEnabled(bool e) { marker_editing_enabled_ = e; }
 
   void DeleteSelected();
 
@@ -61,6 +63,11 @@ public:
   void DeselectAllMarkers();
 
   void SeekToScenePoint(qreal scene);
+
+  bool HasItemsSelected() const
+  {
+    return !selection_manager_.GetSelectedObjects().empty();
+  }
 
   const std::vector<TimelineMarker*> &GetSelectedMarkers() const
   {
@@ -77,6 +84,9 @@ public slots:
   }
 
   virtual void TimebaseChangedEvent(const rational &) override;
+
+signals:
+  void DragReleased();
 
 protected:
   virtual void mousePressEvent(QMouseEvent *event) override;
@@ -114,6 +124,8 @@ private:
 
   bool FindResizeHandle(QMouseEvent *event);
 
+  void ClearResizeHandle();
+
   void DragResizeHandle(const QPointF &scene_pos);
 
   void CommitResizeHandle();
@@ -139,6 +151,10 @@ private:
 
   int marker_top_;
   int marker_bottom_;
+
+  bool marker_editing_enabled_;
+
+  QPolygon last_playhead_shape_;
 
 private slots:
   void SetMarkerColor(int c);

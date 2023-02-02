@@ -21,23 +21,13 @@
 #ifndef QTVERSIONABSTRACTION_H
 #define QTVERSIONABSTRACTION_H
 
-/**
- *
- * A fairly simple header for reducing the amount of Qt version checks necessary throughout the code
- *
- */
-
+#include <olive/core/core.h>
+#include <QComboBox>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QFrame>
 #include <QMessageBox>
-
-#include "common/define.h"
-
-#ifdef MessageBox
-#undef MessageBox
-#endif
 
 namespace olive {
 
@@ -56,7 +46,7 @@ public:
 
   static QFrame* CreateVerticalLine();
 
-  static int MessageBox(QWidget *parent, QMessageBox::Icon icon, const QString& title, const QString& message, QMessageBox::StandardButtons buttons = QMessageBox::Ok);
+  static int MsgBox(QWidget *parent, QMessageBox::Icon icon, const QString& title, const QString& message, QMessageBox::StandardButtons buttons = QMessageBox::Ok);
 
   static QDateTime GetCreationDate(const QFileInfo &info);
 
@@ -64,8 +54,43 @@ public:
 
   static QStringList WordWrapString(const QString &s, const QFontMetrics &fm, int bounding_width);
 
+  static Qt::KeyboardModifiers FlipControlAndShiftModifiers(Qt::KeyboardModifiers e);
+
+  static void SetComboBoxData(QComboBox *cb, int data);
+
+  template <typename T>
+  static T *GetParentOfType(const QObject *child)
+  {
+    QObject *t = child->parent();
+
+    while (t) {
+      if (T *p = dynamic_cast<T*>(t)) {
+        return p;
+      }
+      t = t->parent();
+    }
+
+    return nullptr;
+  }
+
+  static QColor toQColor(const core::Color &c);
+
 };
 
+namespace core {
+
+uint qHash(const core::rational& r, uint seed = 0);
+uint qHash(const core::TimeRange& r, uint seed = 0);
+
 }
+
+}
+
+Q_DECLARE_METATYPE(olive::core::rational);
+Q_DECLARE_METATYPE(olive::core::Color);
+Q_DECLARE_METATYPE(olive::core::TimeRange);
+Q_DECLARE_METATYPE(olive::core::Bezier);
+Q_DECLARE_METATYPE(olive::core::AudioParams);
+Q_DECLARE_METATYPE(olive::core::SampleBuffer);
 
 #endif // QTVERSIONABSTRACTION_H

@@ -49,28 +49,41 @@ void Folder::Retranslate()
   SetInputName(kChildInput, tr("Children"));
 }
 
-bool ChildExistsWithNameInternal(const Folder* n, const QString& s)
+Node *GetChildWithNameInternal(const Folder* n, const QString& s)
 {
   for (int i=0; i<n->item_child_count(); i++) {
     Node* child = n->item_child(i);
 
     if (child->GetLabel() == s) {
-      return true;
-    } else {
-      Folder* subfolder = dynamic_cast<Folder*>(child);
+      return child;
+    } else if (Folder* subfolder = dynamic_cast<Folder*>(child)) {
+      if (Node *n2 = GetChildWithNameInternal(subfolder, s)) {
+        return n2;
+      }
+    }
+  }
 
-      if (subfolder && ChildExistsWithNameInternal(subfolder, s)) {
+  return nullptr;
+}
+
+Node *Folder::GetChildWithName(const QString &s) const
+{
+  return GetChildWithNameInternal(this, s);
+}
+
+bool Folder::HasChildRecursive(Node *child) const
+{
+  for (Node *i : item_children_) {
+    if (i == child) {
+      return true;
+    } else if (Folder *f = dynamic_cast<Folder*>(i)) {
+      if (f->HasChildRecursive(child)) {
         return true;
       }
     }
   }
 
   return false;
-}
-
-bool Folder::ChildExistsWithName(const QString &s) const
-{
-  return ChildExistsWithNameInternal(this, s);
 }
 
 int Folder::index_of_child_in_array(Node *item) const

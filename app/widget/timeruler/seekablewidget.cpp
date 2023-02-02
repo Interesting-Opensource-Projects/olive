@@ -48,7 +48,8 @@ SeekableWidget::SeekableWidget(QWidget* parent) :
   selection_manager_(this),
   resize_item_(nullptr),
   marker_top_(0),
-  marker_bottom_(0)
+  marker_bottom_(0),
+  marker_editing_enabled_(true)
 {
   QFontMetrics fm = fontMetrics();
 
@@ -62,6 +63,8 @@ SeekableWidget::SeekableWidget(QWidget* parent) :
   setMouseTracking(true);
 
   selection_manager_.SetSnapMask(TimeBasedWidget::kSnapAll);
+
+  SetIsTimelineAxes(true);
 }
 
 void SeekableWidget::SetMarkers(TimelineMarkerList *markers)
@@ -148,7 +151,7 @@ bool SeekableWidget::PasteMarkers()
       for (auto it=markers.cbegin(); it!=markers.cend(); it++) {
         min = std::min(min, (*it)->time().in());
       }
-      min -= GetTime();
+      min -= GetViewerNode()->GetPlayhead();
 
       for (auto it=markers.cbegin(); it!=markers.cend(); it++) {
         TimelineMarker *m = *it;
@@ -172,7 +175,15 @@ bool SeekableWidget::PasteMarkers()
 
 void SeekableWidget::mousePressEvent(QMouseEvent *event)
 {
-  if (resize_item_) {
+  TimelineMarker *initial;
+
+  if (HandPress(event)) {
+    return;
+  } else if (event->modifiers() & Qt::ControlModifier) {
+    selection_manager_.RubberBandStart(event);
+  } else if (marker_editing_enabled_ && (initial = selection_manager_.MousePress(event))) {
+    selection_manager_.DragStart(initial, event);
+  } else if (resize_item_) {
     // Handle selection, even though we won't be using it for dragging
     if (!(event->modifiers() & Qt::ShiftModifier)) {
       selection_manager_.ClearSelection();
@@ -182,8 +193,6 @@ void SeekableWidget::mousePressEvent(QMouseEvent *event)
     }
     dragging_ = true;
     resize_start_ = mapToScene(event->pos());
-  } else if (TimelineMarker *initial = selection_manager_.MousePress(event)) {
-    selection_manager_.DragStart(initial, event);
   } else if (!selection_manager_.GetObjectAtPoint(event->pos()) && event->button() == Qt::LeftButton) {
     SeekToScenePoint(mapToScene(event->pos()).x());
     dragging_ = true;
@@ -194,7 +203,12 @@ void SeekableWidget::mousePressEvent(QMouseEvent *event)
 
 void SeekableWidget::mouseMoveEvent(QMouseEvent *event)
 {
-  if (selection_manager_.IsDragging()) {
+  if (HandMove(event)) {
+    return;
+  } else if (selection_manager_.IsRubberBanding()) {
+    selection_manager_.RubberBandMove(event);
+    viewport()->update();
+  } else if (selection_manager_.IsDragging()) {
     selection_manager_.DragMove(event);
   } else if (dragging_) {
     QPointF scene = mapToScene(event->pos());
@@ -205,16 +219,28 @@ void SeekableWidget::mouseMoveEvent(QMouseEvent *event)
     }
   } else {
     // Look for resize points
-    if (FindResizeHandle(event)) {
+    if (!last_playhead_shape_.containsPoint(event->pos(), Qt::OddEvenFill)
+        && !selection_manager_.GetObjectAtPoint(event->pos())
+        && FindResizeHandle(event)) {
       setCursor(Qt::SizeHorCursor);
     } else {
       unsetCursor();
+      ClearResizeHandle();
     }
   }
 }
 
 void SeekableWidget::mouseReleaseEvent(QMouseEvent *event)
 {
+  if (HandRelease(event)) {
+    return;
+  }
+
+  if (selection_manager_.IsRubberBanding()) {
+    selection_manager_.RubberBandStop();
+    return;
+  }
+
   if (selection_manager_.IsDragging()) {
     MultiUndoCommand *command = new MultiUndoCommand();
     selection_manager_.DragStop(command);
@@ -231,6 +257,7 @@ void SeekableWidget::mouseReleaseEvent(QMouseEvent *event)
   }
 
   dragging_ = false;
+  emit DragReleased();
 }
 
 void SeekableWidget::mouseDoubleClickEvent(QMouseEvent *event)
@@ -276,7 +303,17 @@ void SeekableWidget::DrawMarkers(QPainter *p, int marker_bottom)
         break;
       }
 
-      QRect marker_rect = marker->Draw(p, QPoint(marker_left, marker_bottom), GetScale(), selection_manager_.IsSelected(marker));
+      int max_marker_right = lim_right;
+      {
+        // Check if there's a marker next
+        auto next = it;
+        next++;
+        if (next != markers_->cend()) {
+          max_marker_right = std::min(max_marker_right, int(TimeToScene((*next)->time().in())));
+        }
+      }
+
+      QRect marker_rect = marker->Draw(p, QPoint(marker_left, marker_bottom), max_marker_right, GetScale(), selection_manager_.IsSelected(marker));
       marker_top_ = marker_rect.top();
       selection_manager_.DeclareDrawnObject(marker, marker_rect);
     }
@@ -357,10 +394,8 @@ void SeekableWidget::SeekToScenePoint(qreal scene)
     playhead_time += movement;
   }
 
-  if (playhead_time != GetTime()) {
-    SetTime(playhead_time);
-
-    emit TimeChanged(playhead_time);
+  if (playhead_time != GetViewerNode()->GetPlayhead()) {
+    GetViewerNode()->SetPlayhead(playhead_time);
   }
 }
 
@@ -393,16 +428,16 @@ void SeekableWidget::DrawPlayhead(QPainter *p, int x, int y)
 
   int half_text_height = text_height() / 3;
 
-  QPoint points[] = {
+  last_playhead_shape_ = QPolygon({
     QPoint(x, y),
     QPoint(x - half_width, y - half_text_height),
     QPoint(x - half_width, y - text_height()),
     QPoint(x + 1 + half_width, y - text_height()),
     QPoint(x + 1 + half_width, y - half_text_height),
     QPoint(x + 1, y),
-  };
+  });
 
-  p->drawPolygon(points, 6);
+  p->drawPolygon(last_playhead_shape_);
 
   p->setRenderHint(QPainter::Antialiasing, false);
 }
@@ -419,7 +454,7 @@ int SeekableWidget::GetRightLimit() const
 
 bool SeekableWidget::ShowContextMenu(const QPoint &p)
 {
-  if (selection_manager_.GetObjectAtPoint(p) && !selection_manager_.GetSelectedObjects().empty()) {
+  if (marker_editing_enabled_ && selection_manager_.GetObjectAtPoint(p) && !selection_manager_.GetSelectedObjects().empty()) {
     // Show marker-specific menu
     Menu m;
 
@@ -446,8 +481,11 @@ bool SeekableWidget::ShowContextMenu(const QPoint &p)
 
 bool SeekableWidget::FindResizeHandle(QMouseEvent *event)
 {
-  resize_item_ = nullptr;
-  resize_mode_ = kResizeNone;
+  if (!marker_editing_enabled_) {
+    return false;
+  }
+
+  ClearResizeHandle();
 
   QPointF scene = mapToScene(event->pos());
   const int border = 10;
@@ -455,7 +493,7 @@ bool SeekableWidget::FindResizeHandle(QMouseEvent *event)
   rational max = SceneToTimeNoGrid(scene.x() + border);
 
   // Test for workarea
-  if (workarea_) {
+  if (workarea_ && workarea_->enabled()) {
     if (workarea_->in() >= min && workarea_->in() < max) {
       resize_mode_ = kResizeIn;
     } else if (workarea_->out() >= min && workarea_->out() < max) {
@@ -493,6 +531,12 @@ bool SeekableWidget::FindResizeHandle(QMouseEvent *event)
   }
 
   return resize_item_;
+}
+
+void SeekableWidget::ClearResizeHandle()
+{
+  resize_item_ = nullptr;
+  resize_mode_ = kResizeNone;
 }
 
 void SeekableWidget::DragResizeHandle(const QPointF &scene)

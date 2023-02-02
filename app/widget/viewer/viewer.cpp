@@ -21,6 +21,7 @@
 #include "viewer.h"
 
 #include <QDateTime>
+#include <QFontDialog>
 #include <QGuiApplication>
 #include <QInputDialog>
 #include <QLabel>
@@ -31,20 +32,19 @@
 #include <QVBoxLayout>
 
 #include "audio/audiomanager.h"
-#include "common/clamp.h"
-#include "common/power.h"
 #include "common/ratiodialog.h"
-#include "common/timecodefunctions.h"
 #include "config/config.h"
 #include "core.h"
 #include "node/block/gap/gap.h"
 #include "node/generator/shape/shapenodebase.h"
 #include "node/project/project.h"
+#include "panel/multicam/multicampanel.h"
+#include "panel/panelmanager.h"
 #include "render/rendermanager.h"
-#include "task/taskmanager.h"
 #include "viewerpreventsleep.h"
+#include "widget/audiomonitor/audiomonitor.h"
 #include "widget/menu/menu.h"
-#include "window/mainwindow/mainwindow.h"
+#include "widget/multicam/multicamdisplay.h"
 #include "widget/nodeparamview/nodeparamviewundo.h"
 #include "widget/timelinewidget/tool/add.h"
 #include "widget/timeruler/timeruler.h"
@@ -63,7 +63,7 @@ const rational ViewerWidget::kAudioPlaybackInterval = rational(1, 4);
 
 const rational kVideoPlaybackInterval = rational(1, 2);
 
-ViewerWidget::ViewerWidget(QWidget *parent) :
+ViewerWidget::ViewerWidget(ViewerDisplayWidget *display, QWidget *parent) :
   super(false, true, parent),
   playback_speed_(0),
   color_menu_enabled_(true),
@@ -74,19 +74,19 @@ ViewerWidget::ViewerWidget(QWidget *parent) :
   recording_(false),
   first_requeue_watcher_(nullptr),
   enable_audio_scrubbing_(true),
-  waveform_mode_(kWFAutomatic)
+  waveform_mode_(kWFAutomatic),
+  ignore_scrub_(0),
+  multicam_panel_(nullptr)
 {
   // Set up main layout
   QVBoxLayout* layout = new QVBoxLayout(this);
-  layout->setMargin(0);
+  layout->setContentsMargins(0, 0, 0, 0);
 
   // Create main OpenGL-based view and sizer
   sizer_ = new ViewerSizer();
-  sizer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   layout->addWidget(sizer_);
 
-  display_widget_ = new ViewerDisplayWidget();
-  display_widget_->setAcceptDrops(true);
+  display_widget_ = display;
   display_widget_->SetShowWidgetBackground(true);
   playback_devices_.append(display_widget_);
   connect(display_widget_, &ViewerDisplayWidget::customContextMenuRequested, this, &ViewerWidget::ShowContextMenu);
@@ -111,8 +111,7 @@ ViewerWidget::ViewerWidget(QWidget *parent) :
 
   // Create waveform view when audio is connected and video isn't
   waveform_view_ = new AudioWaveformView();
-  ConnectTimelineView(waveform_view_, true);
-  PassWheelEventsToScrollBar(waveform_view_);
+  ConnectTimelineView(waveform_view_);
   layout->addWidget(waveform_view_);
 
   // Create time ruler
@@ -120,8 +119,6 @@ ViewerWidget::ViewerWidget(QWidget *parent) :
 
   // Create scrollbar
   layout->addWidget(scrollbar());
-  connect(scrollbar(), &QScrollBar::valueChanged, ruler(), &TimeRuler::SetScroll);
-  connect(scrollbar(), &QScrollBar::valueChanged, waveform_view_, &AudioWaveformView::SetScroll);
 
   // Create lower controls
   controls_ = new PlaybackControls();
@@ -133,7 +130,6 @@ ViewerWidget::ViewerWidget(QWidget *parent) :
   connect(controls_, &PlaybackControls::NextFrameClicked, this, &ViewerWidget::NextFrame);
   connect(controls_, &PlaybackControls::BeginClicked, this, &ViewerWidget::GoToStart);
   connect(controls_, &PlaybackControls::EndClicked, this, &ViewerWidget::GoToEnd);
-  connect(controls_, &PlaybackControls::TimeChanged, this, &ViewerWidget::SetTimeAndSignal);
   layout->addWidget(controls_);
 
   // FIXME: Magic number
@@ -148,7 +144,10 @@ ViewerWidget::ViewerWidget(QWidget *parent) :
 
   instances_.append(this);
 
-  setAcceptDrops(true);
+  auto_cacher_ = new PreviewAutoCacher(this);
+  connect(display_widget_, &ViewerDisplayWidget::ColorProcessorChanged, auto_cacher_, &PreviewAutoCacher::SetDisplayColorProcessor);
+
+  UpdateWaveformViewFromMode();
 
   connect(Core::instance(), &Core::ColorPickerEnabled, this, &ViewerWidget::SetSignalCursorColorEnabled);
   connect(this, &ViewerWidget::CursorColor, Core::instance(), &Core::ColorPickerColorEmitted);
@@ -164,6 +163,9 @@ ViewerWidget::~ViewerWidget()
   foreach (ViewerWindow* window, windows) {
     delete window;
   }
+
+  delete display_widget_;
+  display_widget_ = nullptr;
 }
 
 void ViewerWidget::TimeChangedEvent(const rational &time)
@@ -177,7 +179,6 @@ void ViewerWidget::TimeChangedEvent(const rational &time)
   }
 
   controls_->SetTime(time);
-  waveform_view_->SetTime(time);
 
   if (GetConnectedNode() && last_time_ != time) {
     if (!IsPlaying()) {
@@ -194,7 +195,7 @@ void ViewerWidget::TimeChangedEvent(const rational &time)
   }
 
   // Send time to auto-cacher
-  auto_cacher_.SetPlayhead(time);
+  auto_cacher_->SetPlayhead(time);
 
   last_time_ = time;
 }
@@ -210,6 +211,8 @@ void ViewerWidget::ConnectNodeEvent(ViewerOutput *n)
   connect(n, &ViewerOutput::AudioParamsChanged, this, &ViewerWidget::UpdateRendererAudioParameters);
   connect(n->video_frame_cache(), &FrameHashCache::Invalidated, this, &ViewerWidget::ViewerInvalidatedVideoRange);
   connect(n, &ViewerOutput::TextureInputChanged, this, &ViewerWidget::UpdateWaveformViewFromMode);
+
+  connect(controls_, &PlaybackControls::TimeChanged, n, &ViewerOutput::SetPlayhead);
 
   VideoParams vp = n->GetVideoParams();
 
@@ -232,7 +235,7 @@ void ViewerWidget::ConnectNodeEvent(ViewerOutput *n)
 
   UpdateWaveformViewFromMode();
 
-  waveform_view_->SetViewer(GetConnectedNode()->audio_playback_cache());
+  waveform_view_->SetViewer(GetConnectedNode());
 
   UpdateRendererVideoParameters();
   UpdateRendererAudioParameters();
@@ -255,9 +258,18 @@ void ViewerWidget::DisconnectNodeEvent(ViewerOutput *n)
   disconnect(n->video_frame_cache(), &FrameHashCache::Invalidated, this, &ViewerWidget::ViewerInvalidatedVideoRange);
   disconnect(n, &ViewerOutput::TextureInputChanged, this, &ViewerWidget::UpdateWaveformViewFromMode);
 
-  CloseAudioProcessor();
+  disconnect(controls_, &PlaybackControls::TimeChanged, n, &ViewerOutput::SetPlayhead);
 
-  SetDisplayImage(QVariant());
+  timeline_selected_blocks_.clear();
+  node_view_selected_.clear();
+  if (multicam_panel_) {
+    multicam_panel_->SetMulticamNode(nullptr, nullptr, nullptr, rational::NaN);
+  }
+
+  CloseAudioProcessor();
+  audio_scrub_watchers_.clear();
+
+  SetDisplayImage(nullptr);
 
   ruler()->SetPlaybackCache(nullptr);
 
@@ -278,7 +290,7 @@ void ViewerWidget::DisconnectNodeEvent(ViewerOutput *n)
 
 void ViewerWidget::ConnectedNodeChangeEvent(ViewerOutput *n)
 {
-  auto_cacher_.SetViewerNode(n);
+  auto_cacher_->SetViewerNode(n);
   display_widget_->SetSubtitleTracks(dynamic_cast<Sequence*>(n));
 }
 
@@ -374,7 +386,7 @@ void ViewerWidget::SetFullScreen(QScreen *screen)
 
   (*vw->display_widget()->queue()) = *playback_devices_.first()->queue();
   if (IsPlaying()) {
-    vw->display_widget()->Play(GetTimestamp(), playback_speed_, timebase());
+    vw->display_widget()->Play(GetTimestamp(), playback_speed_, timebase(), true);
   }
 
   windows_.insert(screen, vw);
@@ -382,13 +394,13 @@ void ViewerWidget::SetFullScreen(QScreen *screen)
 
 void ViewerWidget::CacheEntireSequence()
 {
-  auto_cacher_.ForceCacheRange(TimeRange(0, GetConnectedNode()->GetVideoLength()));
+  auto_cacher_->ForceCacheRange(TimeRange(0, GetConnectedNode()->GetVideoLength()));
 }
 
 void ViewerWidget::CacheSequenceInOut()
 {
   if (GetConnectedNode() && GetConnectedNode()->GetWorkArea()->enabled()) {
-    auto_cacher_.ForceCacheRange(GetConnectedNode()->GetWorkArea()->range());
+    auto_cacher_->ForceCacheRange(GetConnectedNode()->GetWorkArea()->range());
   } else {
     QMessageBox::warning(this,
                          tr("Error"),
@@ -405,12 +417,25 @@ void ViewerWidget::SetGizmos(Node *node)
 
 void ViewerWidget::StartCapture(TimelineWidget *source, const TimeRange &time, const Track::Reference &track)
 {
-  SetTimeAndSignal(time.in());
+  GetConnectedNode()->SetPlayhead(time.in());
   ArmForRecording();
 
   recording_callback_ = source;
   recording_range_ = time;
   recording_track_ = track;
+}
+
+void ViewerWidget::ConnectMulticamWidget(MulticamWidget *p)
+{
+  if (multicam_panel_) {
+    disconnect(multicam_panel_, &MulticamWidget::Switched, this, &ViewerWidget::DetectMulticamNodeNow);
+  }
+
+  multicam_panel_ = p;
+
+  if (multicam_panel_) {
+    connect(multicam_panel_, &MulticamWidget::Switched, this, &ViewerWidget::DetectMulticamNodeNow);
+  }
 }
 
 FramePtr ViewerWidget::DecodeCachedImage(const QString &cache_path, const QUuid &cache_id, const int64_t& time)
@@ -455,12 +480,7 @@ void ViewerWidget::SetEmptyImage()
 
 void ViewerWidget::UpdateAutoCacher()
 {
-  auto_cacher_.SetPlayhead(GetTime());
-}
-
-void ViewerWidget::ClearVideoAutoCacherQueue()
-{
-  auto_cacher_.CancelVideoTasks();
+  auto_cacher_->SetPlayhead(GetConnectedNode()->GetPlayhead());
 }
 
 void ViewerWidget::DecrementPrequeuedAudio()
@@ -486,12 +506,12 @@ void ViewerWidget::DisarmRecording()
 void ViewerWidget::UpdateAudioProcessor()
 {
   if (GetConnectedNode()) {
-    audio_processor_.Close();
+    CloseAudioProcessor();
 
     AudioParams ap = GetConnectedNode()->GetAudioParams();
     AudioParams packed(OLIVE_CONFIG("AudioOutputSampleRate").toInt(),
                        OLIVE_CONFIG("AudioOutputChannelLayout").toULongLong(),
-                       static_cast<AudioParams::Format>(OLIVE_CONFIG("AudioOutputSampleFormat").toInt()));
+                       SampleFormat::from_string(OLIVE_CONFIG("AudioOutputSampleFormat").toString().toStdString()));
 
     audio_processor_.Open(ap, packed, (playback_speed_ == 0) ? 1 : std::abs(playback_speed_));
   }
@@ -503,7 +523,7 @@ void ViewerWidget::CreateAddableAt(const QRectF &f)
     Track::Type type = Track::kVideo;
     int track_index = -1;
     TrackList *list = s->track_list(type);
-    const rational &in = GetTime();
+    const rational &in = GetConnectedNode()->GetPlayhead();
     rational length = OLIVE_CONFIG("DefaultStillLength").value<rational>();
     rational out = in + length;
 
@@ -547,6 +567,61 @@ void ViewerWidget::HandleFirstRequeueDestroy()
   }
 }
 
+void ViewerWidget::ShowSubtitleProperties()
+{
+  QFont f(OLIVE_CONFIG("DefaultSubtitleFamily").toString(), OLIVE_CONFIG("DefaultSubtitleSize").toInt(), OLIVE_CONFIG("DefaultSubtitleWeight").toInt());
+  QFontDialog fd(f, this);
+
+  if (fd.exec() == QDialog::Accepted) {
+    f = fd.selectedFont();
+    OLIVE_CONFIG("DefaultSubtitleSize") = f.pointSize();
+    OLIVE_CONFIG("DefaultSubtitleFamily") = f.family();
+    OLIVE_CONFIG("DefaultSubtitleWeight") = f.weight();
+    display_widget_->update();
+  }
+}
+
+void ViewerWidget::DryRunFinished()
+{
+  RenderTicketWatcher *w = static_cast<RenderTicketWatcher*>(sender());
+
+  if (dry_run_watchers_.contains(w)) {
+    RequestNextDryRun();
+  }
+
+  delete w;
+}
+
+void ViewerWidget::RequestNextDryRun()
+{
+  if (IsPlaying()) {
+    rational next_time = Timecode::timestamp_to_time(dry_run_next_frame_, timebase());
+    if (FrameExistsAtTime(next_time)) {
+      if (next_time > GetConnectedNode()->GetPlayhead() + RenderManager::kDryRunInterval) {
+        QTimer::singleShot(timebase().toDouble() / playback_speed_, this, &ViewerWidget::RequestNextDryRun);
+      } else {
+        RenderTicketWatcher *watcher = new RenderTicketWatcher(this);
+        connect(watcher, &RenderTicketWatcher::Finished, this, &ViewerWidget::DryRunFinished);
+        watcher->SetTicket(GetSingleFrame(next_time, true));
+        dry_run_next_frame_ += playback_speed_;
+        dry_run_watchers_.append(watcher);
+      }
+    }
+  }
+}
+
+void ViewerWidget::SaveFrameAsImage()
+{
+  Core::instance()->OpenExportDialogForViewer(GetConnectedNode(), true);
+}
+
+void ViewerWidget::DetectMulticamNodeNow()
+{
+  if (GetConnectedNode()) {
+    DetectMulticamNode(GetConnectedNode()->GetPlayhead());
+  }
+}
+
 void ViewerWidget::CloseAudioProcessor()
 {
   audio_processor_.Close();
@@ -558,6 +633,81 @@ void ViewerWidget::SetWaveformMode(WaveformMode wf)
   UpdateWaveformViewFromMode();
 }
 
+void ViewerWidget::DetectMulticamNode(const rational &time)
+{
+  // Look for multicam node
+  MultiCamNode *multicam = nullptr;
+  ClipBlock *clip = nullptr;
+
+  // Faster way to do this
+  if (multicam_panel_ && multicam_panel_->isVisible()) {
+    if (Sequence *s = dynamic_cast<Sequence*>(GetConnectedNode())) {
+      // Prefer selected nodes
+      for (Node *n : qAsConst(node_view_selected_)) {
+        if ((multicam = dynamic_cast<MultiCamNode*>(n))) {
+          // Found multicam, now try to find corresponding clip from selected timeline blocks
+          for (Block *b : qAsConst(timeline_selected_blocks_)) {
+            if (ClipBlock *c = dynamic_cast<ClipBlock*>(b)) {
+              if (c->range().Contains(time) && c->ContextContainsNode(multicam)) {
+                clip = c;
+                break;
+              }
+            }
+          }
+          break;
+        }
+      }
+
+      // Next, prefer multicam from selected block
+      if (!multicam) {
+        for (Block *b : qAsConst(timeline_selected_blocks_)) {
+          if (b->range().Contains(time)) {
+            if ((clip = dynamic_cast<ClipBlock*>(b))) {
+              if ((multicam = clip->FindMulticam())) {
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (!multicam) {
+        const QVector<Track*> &tracks = s->GetTracks();
+        for (Track *t : tracks) {
+          if (t->IsLocked()) {
+            continue;
+          }
+
+          Block *b = t->NearestBlockBeforeOrAt(time);
+          if ((clip = dynamic_cast<ClipBlock*>(b))) {
+            if ((multicam = clip->FindMulticam())) {
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (multicam) {
+    if (multicam_panel_) {
+      multicam_panel_->SetMulticamNode(GetConnectedNode(), multicam, clip, time);
+    }
+    auto_cacher()->SetMulticamNode(multicam);
+  } else {
+    auto_cacher()->SetMulticamNode(nullptr);
+    if (multicam_panel_) {
+      multicam_panel_->SetMulticamNode(nullptr, nullptr, nullptr, time);
+    }
+  }
+}
+
+bool ViewerWidget::IsVideoVisible() const
+{
+  return GetConnectedNode()->GetVideoParams().video_type() != VideoParams::kVideoTypeStill
+      && (display_widget_->isVisible() || !windows_.isEmpty());
+}
+
 void ViewerWidget::UpdateWaveformViewFromMode()
 {
   bool prefer_waveform = ShouldForceWaveform();
@@ -566,6 +716,10 @@ void ViewerWidget::UpdateWaveformViewFromMode()
   waveform_view_->setVisible(waveform_mode_ == kWFViewerAndWaveform || waveform_mode_ == kWFWaveformOnly || (waveform_mode_ == kWFAutomatic && prefer_waveform));
 
   waveform_view_->setSizePolicy(QSizePolicy::Expanding, waveform_mode_ == kWFViewerAndWaveform ? QSizePolicy::Maximum : QSizePolicy::Expanding);
+
+  if (GetConnectedNode()) {
+    GetConnectedNode()->SetWaveformEnabled(waveform_view_->isVisible());
+  }
 }
 
 void ViewerWidget::QueueNextAudioBuffer()
@@ -573,7 +727,7 @@ void ViewerWidget::QueueNextAudioBuffer()
   rational queue_end = audio_playback_queue_time_ + (kAudioPlaybackInterval * playback_speed_);
 
   // Clamp queue end by zero and the audio length
-  queue_end  = clamp(queue_end, rational(0), GetConnectedNode()->GetAudioLength());
+  queue_end  = std::clamp(queue_end, rational(0), GetConnectedNode()->GetAudioLength());
   if ((playback_speed_ > 0 && queue_end <= audio_playback_queue_time_)
       || (playback_speed_ < 0 && queue_end >= audio_playback_queue_time_)) {
     // This will queue nothing, so stop the loop here
@@ -586,7 +740,7 @@ void ViewerWidget::QueueNextAudioBuffer()
   RenderTicketWatcher *watcher = new RenderTicketWatcher(this);
   connect(watcher, &RenderTicketWatcher::Finished, this, &ViewerWidget::ReceivedAudioBufferForPlayback);
   audio_playback_queue_.push_back(watcher);
-  watcher->SetTicket(auto_cacher_.GetRangeOfAudio(TimeRange(audio_playback_queue_time_, queue_end)));
+  watcher->SetTicket(auto_cacher_->GetRangeOfAudio(TimeRange(audio_playback_queue_time_, queue_end)));
 
   audio_playback_queue_time_ = queue_end;
 }
@@ -637,30 +791,33 @@ void ViewerWidget::ReceivedAudioBufferForPlayback()
 
 void ViewerWidget::ReceivedAudioBufferForScrubbing()
 {
-  // NOTE: Might be good to organize a queue for this in the event that audio takes a long time to
-  //       keep the scrubbed chunks ordered, similar to the playback_queue_ or audio_playback_queue_
-
   RenderTicketWatcher *watcher = static_cast<RenderTicketWatcher *>(sender());
 
-  if (watcher->HasResult()) {
-    SampleBuffer samples = watcher->Get().value<SampleBuffer>();
-    if (samples.is_allocated()) {
-      if (samples.audio_params().channel_count() > 0) {
-        AudioProcessor::Buffer buf;
-        int r = audio_processor_.Convert(samples.to_raw_ptrs().data(), samples.sample_count(), &buf);
+  while (!audio_scrub_watchers_.empty() && audio_scrub_watchers_.front() != watcher) {
+    audio_scrub_watchers_.pop_front();
+  }
 
-        if (r >= 0) {
-          if (!buf.empty()) {
-            QString error;
-            const QByteArray &packed = buf.at(0);
-            AudioManager::instance()->ClearBufferedOutput();
-            if (!AudioManager::instance()->PushToOutput(audio_processor_.to(), packed, &error)) {
-              Core::instance()->ShowStatusBarMessage(tr("Audio scrubbing failed: %1").arg(error));
+  if (!audio_scrub_watchers_.empty()) {
+    if (watcher->HasResult()) {
+      SampleBuffer samples = watcher->Get().value<SampleBuffer>();
+      if (samples.is_allocated()) {
+        if (samples.audio_params().channel_count() > 0) {
+          AudioProcessor::Buffer buf;
+          int r = audio_processor_.Convert(samples.to_raw_ptrs().data(), samples.sample_count(), &buf);
+
+          if (r >= 0) {
+            if (!buf.empty()) {
+              QString error;
+              const QByteArray &packed = buf.at(0);
+              AudioManager::instance()->ClearBufferedOutput();
+              if (!AudioManager::instance()->PushToOutput(audio_processor_.to(), packed, &error)) {
+                Core::instance()->ShowStatusBarMessage(tr("Audio scrubbing failed: %1").arg(error));
+              }
+              AudioMonitor::PushSampleBufferOnAll(samples);
             }
-            AudioMonitor::PushSampleBufferOnAll(samples);
+          } else {
+            qCritical() << "Failed to process audio for scrubbing:" << r;
           }
-        } else {
-          qCritical() << "Failed to process audio for scrubbing:" << r;
         }
       }
     }
@@ -679,7 +836,7 @@ void ViewerWidget::QueueStarved()
     queue_starved_start_ = now;
   } else if (now > queue_starved_start_ + kMaximumWaitTimeMs) {
     if (first_requeue_watcher_) {
-      if (GetTime() + kMaximumWaitTime < first_requeue_watcher_->property("time").value<rational>()) {
+      if (GetConnectedNode()->GetPlayhead() + kMaximumWaitTime < first_requeue_watcher_->property("time").value<rational>()) {
         // We still have time
         return;
       }
@@ -700,7 +857,7 @@ void ViewerWidget::ForceRequeueFromCurrentTime()
   // Allow half a second for requeue to complete
   static const rational kRequeueWaitTime(1);
 
-  ClearVideoAutoCacherQueue();
+  auto_cacher_->ClearSingleFrameRenders();
   queue_watchers_.clear();
   int queue = DeterminePlaybackQueueSize();
   playback_queue_next_frame_ = GetTimestamp() + playback_speed_ * Timecode::time_to_timestamp(kRequeueWaitTime, timebase(), Timecode::kFloor);;
@@ -725,7 +882,7 @@ void ViewerWidget::UpdateTextureFromNode()
     return;
   }
 
-  rational time = GetTime();
+  rational time = GetConnectedNode()->GetPlayhead();
   bool frame_exists_at_time = FrameExistsAtTime(time);
   bool frame_might_be_still = ViewerMightBeAStill();
 
@@ -739,9 +896,9 @@ void ViewerWidget::UpdateTextureFromNode()
     nonqueue_watchers_.append(watcher);
 
     // Clear queue because we want this frame more than any others
-    if (!GetConnectedNode()->video_frame_cache()->IsEnabled() && !auto_cacher_.IsRenderingCustomRange()) {
-      ClearVideoAutoCacherQueue();
-    }
+    auto_cacher_->ClearSingleFrameRenders();
+
+    DetectMulticamNode(time);
 
     watcher->SetTicket(GetFrame(time));
   } else {
@@ -770,10 +927,8 @@ void ViewerWidget::PlayInternal(int speed, bool in_to_out_only)
   foreach (ViewerWidget* viewer, instances_) {
     if (viewer != this) {
       viewer->PauseInternal();
-      viewer->ClearVideoAutoCacherQueue();
     }
-
-    viewer->auto_cacher_.SetAudioPaused(true);
+    viewer->auto_cacher_->SetThumbnailsPaused(true);
   }
 
   RenderManager::instance()->SetAggressiveGarbageCollection(true);
@@ -786,11 +941,11 @@ void ViewerWidget::PlayInternal(int speed, bool in_to_out_only)
   // If the playhead is beyond the end, restart at 0
   if (!recording_) {
     rational last_frame = GetConnectedNode()->GetLength() - timebase();
-    if (!in_to_out_only && GetTime() >= last_frame) {
+    if (!in_to_out_only && GetConnectedNode()->GetPlayhead() >= last_frame) {
       if (speed > 0) {
-        SetTimeAndSignal(0);
+        GetConnectedNode()->SetPlayhead(0);
       } else {
-        SetTimeAndSignal(last_frame);
+        GetConnectedNode()->SetPlayhead(last_frame);
       }
     }
   }
@@ -805,7 +960,7 @@ void ViewerWidget::PlayInternal(int speed, bool in_to_out_only)
   queue_starved_start_ = 0;
 
   // Attempt to fill playback queue
-  if (display_widget_->isVisible() || !windows_.isEmpty()) {
+  if (IsVideoVisible()) {
     prequeue_length_ = DeterminePlaybackQueueSize();
 
     if (prequeue_length_ > 0) {
@@ -815,6 +970,9 @@ void ViewerWidget::PlayInternal(int speed, bool in_to_out_only)
       for (int i=0; i<prequeue_length_; i++) {
         RequestNextFrameForQueue();
       }
+
+      dry_run_next_frame_ = playback_queue_next_frame_;
+      RequestNextDryRun();
     }
   }
 
@@ -827,11 +985,12 @@ void ViewerWidget::PlayInternal(int speed, bool in_to_out_only)
 
     static const int prequeue_count = 2;
     prequeuing_audio_ = prequeue_count; // Queue two buffers ahead of time
-    audio_playback_queue_time_ = GetTime();
+    audio_playback_queue_time_ = GetConnectedNode()->GetPlayhead();
     for (int i=0; i<prequeue_count; i++) {
       QueueNextAudioBuffer();
     }
   }
+
   // Force screen to stay awake
   PreventSleep(true);
 }
@@ -857,6 +1016,7 @@ void ViewerWidget::PauseInternal()
 
     qDeleteAll(queue_watchers_);
     queue_watchers_.clear();
+    auto_cacher_->ClearSingleFrameRenders();
 
     playback_backup_timer_.stop();
 
@@ -870,7 +1030,7 @@ void ViewerWidget::PauseInternal()
     UpdateAudioProcessor();
 
     foreach (ViewerWidget* viewer, instances_) {
-      viewer->auto_cacher_.SetAudioPaused(false);
+      viewer->auto_cacher_->SetThumbnailsPaused(false);
     }
 
     UpdateTextureFromNode();
@@ -880,6 +1040,7 @@ void ViewerWidget::PauseInternal()
 
   prequeuing_video_ = false;
   prequeuing_audio_ = 0;
+  dry_run_watchers_.clear();
 
   // Reset screen timeout timer
   PreventSleep(false);
@@ -888,16 +1049,23 @@ void ViewerWidget::PauseInternal()
 void ViewerWidget::PushScrubbedAudio()
 {
   if (!IsPlaying() && GetConnectedNode() && OLIVE_CONFIG("AudioScrubbing").toBool() && enable_audio_scrubbing_) {
-    // Get audio src device from renderer
-    const AudioParams& params = GetConnectedNode()->audio_playback_cache()->GetParameters();
+    if (ignore_scrub_ > 0) {
+      ignore_scrub_--;
+    }
 
-    if (params.is_valid()) {
-      // NOTE: Hardcoded scrubbing interval (20ms)
-      rational interval = rational(20, 1000);
+    if (ignore_scrub_ == 0) {
+      // Get audio src device from renderer
+      const AudioParams& params = GetConnectedNode()->GetAudioParams();
 
-      RenderTicketWatcher *watcher = new RenderTicketWatcher();
-      connect(watcher, &RenderTicketWatcher::Finished, this, &ViewerWidget::ReceivedAudioBufferForScrubbing);
-      watcher->SetTicket(auto_cacher_.GetRangeOfAudio(TimeRange(GetTime(), GetTime() + interval)));
+      if (params.is_valid()) {
+        // NOTE: Hardcoded scrubbing interval (20ms)
+        rational interval = rational(20, 1000);
+
+        RenderTicketWatcher *watcher = new RenderTicketWatcher();
+        connect(watcher, &RenderTicketWatcher::Finished, this, &ViewerWidget::ReceivedAudioBufferForScrubbing);
+        audio_scrub_watchers_.push_back(watcher);
+        watcher->SetTicket(auto_cacher_->GetRangeOfAudio(TimeRange(GetConnectedNode()->GetPlayhead(), GetConnectedNode()->GetPlayhead() + interval)));
+      }
     }
   }
 }
@@ -940,10 +1108,18 @@ bool ViewerWidget::ViewerMightBeAStill()
   return GetConnectedNode() && GetConnectedNode()->GetConnectedTextureOutput() && GetConnectedNode()->GetVideoLength().isNull();
 }
 
-void ViewerWidget::SetDisplayImage(QVariant frame)
+void ViewerWidget::SetDisplayImage(RenderTicketPtr ticket)
 {
   foreach (ViewerDisplayWidget *dw, playback_devices_) {
-    dw->SetImage(frame);
+    QVariant push;
+    if (ticket) {
+      if (dynamic_cast<MulticamDisplay*>(dw)) {
+        push = ticket->property("multicam_output");
+      } else {
+        push = ticket->Get();
+      }
+    }
+    dw->SetImage(push);
   }
 }
 
@@ -961,6 +1137,7 @@ RenderTicketWatcher *ViewerWidget::RequestNextFrameForQueue(bool increment)
 
     watcher = new RenderTicketWatcher();
     watcher->setProperty("time", QVariant::fromValue(next_time));
+    DetectMulticamNode(next_time);
     connect(watcher, &RenderTicketWatcher::Finished, this, &ViewerWidget::RendererGeneratedFrameForQueue);
     queue_watchers_.append(watcher);
     watcher->SetTicket(GetFrame(next_time));
@@ -975,12 +1152,12 @@ RenderTicketPtr ViewerWidget::GetFrame(const rational &t)
 
   if (!QFileInfo::exists(cache_fn)) {
     // Frame hasn't been cached, start render job
-    return auto_cacher_.GetSingleFrame(t);
+    return GetSingleFrame(t);
   } else {
     // Frame has been cached, grab the frame
     RenderTicketPtr ticket = std::make_shared<RenderTicket>();
     ticket->setProperty("time", QVariant::fromValue(t));
-    QtConcurrent::run(ViewerWidget::DecodeCachedImage, ticket, GetConnectedNode()->video_frame_cache()->GetCacheDirectory(), GetConnectedNode()->video_frame_cache()->GetUuid(), Timecode::time_to_timestamp(t, timebase(), Timecode::kFloor));
+    QtConcurrent::run(static_cast<void(*)(RenderTicketPtr, const QString &, const QUuid &, const int64_t &)>(ViewerWidget::DecodeCachedImage), ticket, GetConnectedNode()->video_frame_cache()->GetCacheDirectory(), GetConnectedNode()->video_frame_cache()->GetUuid(), Timecode::time_to_timestamp(t, timebase(), Timecode::kFloor));
     return ticket;
   }
 }
@@ -1003,14 +1180,14 @@ void ViewerWidget::FinishPlayPreprocess()
     }
     prequeued_audio_.clear();
 
-    AudioMonitor::StartWaveformOnAll(&GetConnectedNode()->audio_playback_cache()->visual(),
-                                     GetTime(), playback_speed_);
+    AudioMonitor::StartWaveformOnAll(GetConnectedNode()->GetConnectedWaveform(),
+                                     GetConnectedNode()->GetPlayhead(), playback_speed_);
   }
 
   display_widget_->ResetFPSTimer();
 
   foreach (ViewerDisplayWidget *dw, playback_devices_) {
-    dw->Play(playback_start_time, playback_speed_, timebase());
+    dw->Play(playback_start_time, playback_speed_, timebase(), IsVideoVisible());
   }
 
   // This is our timer for loading the queue and setting the time
@@ -1035,7 +1212,7 @@ int ViewerWidget::DeterminePlaybackQueueSize()
     end_ts = 0;
   }
 
-  int remaining_frames = (end_ts - GetTimestamp()) / playback_speed_;
+  int remaining_frames = (end_ts - GetTimestamp() - 1) / playback_speed_;
 
   // Generate maximum queue
   int max_frames = qCeil(kVideoPlaybackInterval.toDouble() / timebase().toDouble());
@@ -1102,7 +1279,7 @@ void ViewerWidget::RendererGeneratedFrame()
         }
       }
 
-      SetDisplayImage(ticket->Get());
+      SetDisplayImage(ticket->GetTicket());
     }
   }
 
@@ -1124,7 +1301,14 @@ void ViewerWidget::RendererGeneratedFrameForQueue()
         rational ts = watcher->property("time").value<rational>();
 
         foreach (ViewerDisplayWidget *dw, playback_devices_) {
-          dw->queue()->AppendTimewise({ts, frame}, playback_speed_);
+          QVariant push;
+          if (dynamic_cast<MulticamDisplay*>(dw)) {
+            push = watcher->GetTicket()->property("multicam_output");
+          } else {
+            push = frame;
+          }
+
+          dw->queue()->AppendTimewise({ts, push}, playback_speed_);
         }
 
         if (prequeuing_video_) {
@@ -1165,6 +1349,11 @@ void ViewerWidget::ShowContextMenu(const QPoint &pos)
     // Color options
     if (context_menu_widget_->color_manager() && color_menu_enabled_) {
       {
+        Menu* ocio_colorspace_menu = context_menu_widget_->GetColorSpaceMenu(&menu);
+        menu.addMenu(ocio_colorspace_menu);
+      }
+
+      {
         Menu* ocio_display_menu = context_menu_widget_->GetDisplayMenu(&menu);
         menu.addMenu(ocio_display_menu);
       }
@@ -1187,10 +1376,10 @@ void ViewerWidget::ShowContextMenu(const QPoint &pos)
       Menu* zoom_menu = new Menu(tr("Zoom"), &menu);
       menu.addMenu(zoom_menu);
 
-      int zoom_levels[] = {10, 25, 50, 75, 100, 150, 200, 400};
       zoom_menu->addAction(tr("Fit"))->setData(0);
-      for (int i=0;i<8;i++) {
-        zoom_menu->addAction(tr("%1%").arg(zoom_levels[i]))->setData(zoom_levels[i]);
+      for (int i=0;i<ViewerSizer::kZoomLevelCount;i++) {
+        int z = ViewerSizer::kZoomLevels[i];
+        zoom_menu->addAction(tr("%1%").arg(z))->setData(z);
       }
 
       connect(zoom_menu, &QMenu::triggered, this, &ViewerWidget::SetZoomFromMenu);
@@ -1240,6 +1429,7 @@ void ViewerWidget::ShowContextMenu(const QPoint &pos)
 
     menu.addSeparator();
 
+    /* TEMP: Hide sequence cache options. Want to see if clip caching supersedes it.
     {
       Menu* cache_menu = new Menu(tr("Cache"), &menu);
       menu.addMenu(cache_menu);
@@ -1251,7 +1441,7 @@ void ViewerWidget::ShowContextMenu(const QPoint &pos)
       // Cache In/Out Sequence
       QAction* cache_inout_sequence = cache_menu->addAction(tr("Cache Sequence In/Out"));
       connect(cache_inout_sequence, &QAction::triggered, this, &ViewerWidget::CacheSequenceInOut);
-    }
+    }*/
 
     menu.addSeparator();
 
@@ -1309,11 +1499,32 @@ void ViewerWidget::ShowContextMenu(const QPoint &pos)
   }
 
   if (context_menu_widget_ == display_widget_) {
-    QAction* show_subtitles_action = menu.addAction(tr("Show Subtitles"));
+    auto subtitle_menu = new Menu(tr("Subtitles"), &menu);
+    menu.addMenu(subtitle_menu);
+
+    QAction* show_subtitles_action = subtitle_menu->addAction(tr("Show Subtitles"));
     show_subtitles_action->setCheckable(true);
     show_subtitles_action->setChecked(display_widget_->GetShowSubtitles());
     connect(show_subtitles_action, &QAction::triggered, display_widget_, &ViewerDisplayWidget::SetShowSubtitles);
+
+    subtitle_menu->addSeparator();
+
+    auto subtitle_font_properties = subtitle_menu->addAction(tr("Subtitle Properties"));
+    connect(subtitle_font_properties, &QAction::triggered, this, &ViewerWidget::ShowSubtitleProperties);
+
+    auto subtitle_antialias = subtitle_menu->addAction(tr("Use Anti-aliasing"));
+    subtitle_antialias->setCheckable(true);
+    subtitle_antialias->setChecked(OLIVE_CONFIG("AntialiasSubtitles").toBool());
+    connect(subtitle_antialias, &QAction::triggered, this, [this](bool e){
+      OLIVE_CONFIG("AntialiasSubtitles") = e;
+      display_widget_->update();
+    });
   }
+
+  menu.addSeparator();
+
+  auto save_frame_as_image = menu.addAction(tr("Save Frame As Image"));
+  connect(save_frame_as_image, &QAction::triggered, this, &ViewerWidget::SaveFrameAsImage);
 
   menu.exec(static_cast<QWidget*>(sender())->mapToGlobal(pos));
 }
@@ -1324,7 +1535,7 @@ void ViewerWidget::Play(bool in_to_out_only)
     if (GetConnectedNode()
         && GetConnectedNode()->GetWorkArea()->enabled()) {
       // Jump to in point
-      SetTimeAndSignal(GetConnectedNode()->GetWorkArea()->in());
+      GetConnectedNode()->SetPlayhead(GetConnectedNode()->GetWorkArea()->in());
     } else {
       in_to_out_only = false;
     }
@@ -1346,7 +1557,9 @@ void ViewerWidget::Play(bool in_to_out_only)
                                                 ExportFormat::GetExtension(static_cast<ExportFormat::Format>(OLIVE_CONFIG("AudioRecordingFormat").toInt())))
                                               );
 
-    AudioParams ap(OLIVE_CONFIG("AudioRecordingSampleRate").toInt(), OLIVE_CONFIG("AudioRecordingChannelLayout").toULongLong(), static_cast<AudioParams::Format>(OLIVE_CONFIG("AudioRecordingSampleFormat").toInt()));
+    AudioParams ap(OLIVE_CONFIG("AudioRecordingSampleRate").toInt(),
+                   OLIVE_CONFIG("AudioRecordingChannelLayout").toULongLong(),
+                   SampleFormat::from_string(OLIVE_CONFIG("AudioRecordingSampleFormat").toString().toStdString()));
 
     EncodingParams encode_param;
     encode_param.EnableAudio(ap, static_cast<ExportCodec::Codec>(OLIVE_CONFIG("AudioRecordingCodec").toInt()));
@@ -1434,7 +1647,7 @@ void ViewerWidget::TimebaseChangedEvent(const rational &timebase)
 
   controls_->SetTimebase(timebase);
 
-  controls_->SetTime(ruler()->GetTime());
+  controls_->SetTime(GetConnectedNode() ? GetConnectedNode()->GetPlayhead() : 0);
   LengthChangedSlot(GetConnectedNode() ? GetConnectedNode()->GetLength() : 0);
 }
 
@@ -1519,7 +1732,7 @@ void ViewerWidget::PlaybackTimerUpdate()
   // pausing. Even if we pause it later with `end_of_line`, we prefer pausing after setting the time
   // so that an audio scrub event, etc. isn't sent.
   time_changed_from_timer_ = true;
-  SetTimeAndSignal(time_to_set);
+  GetConnectedNode()->SetPlayhead(time_to_set);
   time_changed_from_timer_ = false;
   if (end_of_line) {
     // Cache the current speed
@@ -1531,7 +1744,7 @@ void ViewerWidget::PlaybackTimerUpdate()
     }
   }
 
-  if (IsPlaying()) {
+  if (IsPlaying() && IsVideoVisible()) {
     while ((int(display_widget_->queue()->size()) + queue_watchers_.size()) < DeterminePlaybackQueueSize()) {
       if (!RequestNextFrameForQueue()) {
         // Prevent infinite loop
@@ -1569,7 +1782,7 @@ void ViewerWidget::LengthChangedSlot(const rational &length)
     controls_->SetEndTime(length);
     UpdateMinimumScale();
 
-    if (length < last_length_ && GetTime() >= length) {
+    if (GetConnectedNode() && length < last_length_ && GetConnectedNode()->GetPlayhead() >= length) {
       UpdateTextureFromNode();
     }
 
@@ -1598,7 +1811,13 @@ void ViewerWidget::UpdateRendererVideoParameters()
 
 void ViewerWidget::UpdateRendererAudioParameters()
 {
+  AudioParams ap = GetConnectedNode()->GetAudioParams();
+
   UpdateAudioProcessor();
+
+  foreach (ViewerDisplayWidget *dw, playback_devices_) {
+    dw->SetAudioParams(ap);
+  }
 }
 
 void ViewerWidget::SetZoomFromMenu(QAction *action)
@@ -1609,7 +1828,7 @@ void ViewerWidget::SetZoomFromMenu(QAction *action)
 void ViewerWidget::ViewerInvalidatedVideoRange(const TimeRange &range)
 {
   // If our current frame is within this range, we need to update
-  if (GetTime() >= range.in() && (GetTime() < range.out() || range.in() == range.out())) {
+  if (!IsPlaying() && GetConnectedNode()->GetPlayhead() >= range.in() && (GetConnectedNode()->GetPlayhead() < range.out() || range.in() == range.out())) {
     QMetaObject::invokeMethod(this, &ViewerWidget::UpdateTextureFromNode, Qt::QueuedConnection);
   }
 }

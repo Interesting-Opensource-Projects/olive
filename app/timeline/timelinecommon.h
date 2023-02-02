@@ -21,8 +21,11 @@
 #ifndef TIMELINECOMMON_H
 #define TIMELINECOMMON_H
 
+#include <olive/core/core.h>
+
 #include "common/define.h"
-#include "common/rational.h"
+
+using namespace olive::core;
 
 namespace olive {
 
@@ -36,6 +39,17 @@ public:
     kMove,
     kTrimIn,
     kTrimOut
+  };
+
+  enum ThumbnailMode {
+    kThumbnailOff,
+    kThumbnailInOut,
+    kThumbnailOn
+  };
+
+  enum WaveformMode {
+    kWaveformsDisabled,
+    kWaveformsEnabled
   };
 
   static bool IsATrimMode(MovementMode mode) {return mode == kTrimIn || mode == kTrimOut;}

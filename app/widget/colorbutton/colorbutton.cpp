@@ -24,14 +24,16 @@
 
 namespace olive {
 
-ColorButton::ColorButton(ColorManager* color_manager, QWidget *parent) :
+ColorButton::ColorButton(ColorManager* color_manager, bool show_dialog_on_click, QWidget *parent) :
   QPushButton(parent),
   color_manager_(color_manager),
   color_processor_(nullptr)
 {
   setAutoFillBackground(true);
 
-  connect(this, &ColorButton::clicked, this, &ColorButton::ShowColorDialog);
+  if (show_dialog_on_click) {
+    connect(this, &ColorButton::clicked, this, &ColorButton::ShowColorDialog);
+  }
 
   SetColor(Color(1.0f, 1.0f, 1.0f));
 }
@@ -81,7 +83,7 @@ void ColorButton::UpdateColor()
                                             color_.color_input(),
                                             color_.color_output());
 
-  QColor managed = color_processor_->ConvertColor(color_).toQColor();
+  QColor managed = QtUtils::toQColor(color_processor_->ConvertColor(color_));
 
   setStyleSheet(QStringLiteral("%1--ColorButton {background: %2;}").arg(MACRO_VAL_AS_STR(olive), managed.name()));
 }

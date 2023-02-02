@@ -24,7 +24,6 @@
 #include <QTimer>
 #include <QWidget>
 
-#include "common/timerange.h"
 #include "seekablewidget.h"
 #include "render/playbackcache.h"
 
@@ -52,8 +51,6 @@ private:
   void UpdateHeight();
 
   int CacheStatusHeight() const;
-
-  int cache_status_height_;
 
   int minimum_gap_between_lines_;
 

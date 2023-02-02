@@ -20,8 +20,9 @@
 
 #include "menushared.h"
 
+#include <QActionGroup>
+
 #include "core.h"
-#include "common/timecodefunctions.h"
 #include "panel/panelmanager.h"
 #include "panel/timeline/timeline.h"
 #include "window/mainwindow/mainwindow.h"
@@ -43,6 +44,7 @@ MenuShared::MenuShared()
   edit_paste_item_ = Menu::CreateItem(this, "paste", this, &MenuShared::PasteTriggered, tr("Ctrl+V"));
   edit_paste_insert_item_ = Menu::CreateItem(this, "pasteinsert", this, &MenuShared::PasteInsertTriggered, tr("Ctrl+Shift+V"));
   edit_duplicate_item_ = Menu::CreateItem(this, "duplicate", this, &MenuShared::DuplicateTriggered, tr("Ctrl+D"));
+  edit_rename_item_ = Menu::CreateItem(this, "rename", this, &MenuShared::RenameSelectedTriggered, tr("F2"));
   edit_delete_item_ = Menu::CreateItem(this, "delete", this, &MenuShared::DeleteSelectedTriggered, tr("Del"));
   edit_ripple_delete_item_ = Menu::CreateItem(this, "rippledelete", this, &MenuShared::RippleDeleteTriggered, tr("Shift+Del"));
   edit_split_item_ = Menu::CreateItem(this, "split", this, &MenuShared::SplitAtPlayheadTriggered, tr("Ctrl+K"));
@@ -131,6 +133,7 @@ void MenuShared::AddItemsForEditMenu(Menu *m, bool for_clips)
   m->addAction(edit_paste_item_);
   m->addAction(edit_paste_insert_item_);
   m->addAction(edit_duplicate_item_);
+  m->addAction(edit_rename_item_);
   m->addAction(edit_delete_item_);
 
   if (for_clips) {
@@ -185,7 +188,7 @@ void MenuShared::AboutToShowTimeRulerActions(const rational& timebase)
   Timecode::Display current_timecode_display = Core::instance()->GetTimecodeDisplay();
 
   // Only show the drop-frame option if the timebase is drop-frame
-  view_timecode_view_dropframe_item_->setVisible(!timebase.isNull() && Timecode::TimebaseIsDropFrame(timebase));
+  view_timecode_view_dropframe_item_->setVisible(!timebase.isNull() && Timecode::timebase_is_drop_frame(timebase));
 
   if (!view_timecode_view_dropframe_item_->isVisible() && current_timecode_display == Timecode::kTimecodeDropFrame) {
     // If the current setting is drop-frame, correct to non-drop frame
@@ -279,6 +282,11 @@ void MenuShared::DuplicateTriggered()
   PanelManager::instance()->CurrentlyFocused()->Duplicate();
 }
 
+void MenuShared::RenameSelectedTriggered()
+{
+  PanelManager::instance()->CurrentlyFocused()->RenameSelected();
+}
+
 void MenuShared::EnableDisableTriggered()
 {
   PanelManager::instance()->CurrentlyFocused()->ToggleSelectedEnabled();
@@ -286,7 +294,7 @@ void MenuShared::EnableDisableTriggered()
 
 void MenuShared::NestTriggered()
 {
-  qDebug() << "FIXME: Stub";
+  PanelManager::instance()->MostRecentlyFocused<TimelinePanel>()->NestSelectedClips();
 }
 
 void MenuShared::DefaultTransitionTriggered()
@@ -333,6 +341,7 @@ void MenuShared::Retranslate()
   edit_paste_item_->setText(tr("&Paste"));
   edit_paste_insert_item_->setText(tr("Paste Insert"));
   edit_duplicate_item_->setText(tr("Duplicate"));
+  edit_rename_item_->setText(tr("Rename"));
   edit_delete_item_->setText(tr("Delete"));
   edit_ripple_delete_item_->setText(tr("Ripple Delete"));
   edit_split_item_->setText(tr("Split"));

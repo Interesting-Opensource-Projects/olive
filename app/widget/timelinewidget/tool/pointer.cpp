@@ -23,11 +23,8 @@
 #include <QDebug>
 #include <QToolTip>
 
-#include "common/clamp.h"
-#include "common/flipmodifiers.h"
 #include "common/qtutils.h"
 #include "common/range.h"
-#include "common/timecodefunctions.h"
 #include "config/config.h"
 #include "core.h"
 #include "node/block/gap/gap.h"
@@ -383,6 +380,10 @@ void PointerTool::InitiateDragInternal(Block *clicked_item,
     } else {
       // Prepare for a standard pointer move by creating ghosts for them and any related blocks
       foreach (Block* block, clips) {
+        if (dynamic_cast<GapBlock*>(block)) {
+          continue;
+        }
+
         // Create ghost for this block
         auto ghost = AddGhostFromBlock(block, trim_mode, true);
         Q_UNUSED(ghost)
@@ -406,7 +407,7 @@ void PointerTool::InitiateDragInternal(Block *clicked_item,
     bool multitrim_enabled = IsClipTrimmable(clicked_item, clips, trim_mode);
 
     // Create ghosts for trimming
-    foreach (Block* clip_item, clips) {
+    for (Block* clip_item : clips) {
       if (clip_item != clicked_item
           && (!multitrim_enabled || !IsClipTrimmable(clip_item, clips, trim_mode))) {
         // Either multitrim is disabled or this clip is NOT the earliest/latest in its track. We
@@ -481,7 +482,7 @@ void PointerTool::InitiateDragInternal(Block *clicked_item,
           //        I'm only including it to prevent any potentially unintended behavior.
           if (clips.size() == 1 && !(modifiers & Qt::AltModifier)) {
             if (ClipBlock *adjacent_clip = dynamic_cast<ClipBlock*>(adjacent)) {
-              foreach (Block *adjacent_link, adjacent_clip->block_links()) {
+              for (Block *adjacent_link : adjacent_clip->block_links()) {
                 adjacent_ghosts.append(AddGhostFromBlock(adjacent_link, flipped_mode));
               }
             }
@@ -496,7 +497,7 @@ void PointerTool::InitiateDragInternal(Block *clicked_item,
         // expected to fill the remaining space (no gap needs to be created)
         ghost->SetData(TimelineViewGhostItem::kTrimIsARollEdit, static_cast<bool>(adjacent));
 
-        foreach (TimelineViewGhostItem *adjacent_ghost, adjacent_ghosts) {
+        for (TimelineViewGhostItem *adjacent_ghost : adjacent_ghosts) {
           if (adjacent_ghost) {
             if (treat_trim_as_slide) {
               // We're sliding a transition rather than a pure trim/roll
@@ -568,6 +569,7 @@ void PointerTool::ProcessDrag(const TimelineCoordinate &mouse_pos)
       break;
     case Timeline::kTrimIn:
       ghost->SetInAdjustment(time_movement);
+      ghost->SetMediaInAdjustment(time_movement);
       break;
     case Timeline::kTrimOut:
       ghost->SetOutAdjustment(time_movement);
@@ -592,10 +594,10 @@ void PointerTool::ProcessDrag(const TimelineCoordinate &mouse_pos)
   rational tooltip_timebase = parent()->GetTimebaseForTrackType(drag_start_.GetTrack().type());
   QToolTip::hideText();
   QToolTip::showText(QCursor::pos(),
-                     Timecode::time_to_timecode(time_movement,
-                                                tooltip_timebase,
-                                                Core::instance()->GetTimecodeDisplay(),
-                                                true),
+                     QString::fromStdString(Timecode::time_to_timecode(time_movement,
+                                                                       tooltip_timebase,
+                                                                       Core::instance()->GetTimecodeDisplay(),
+                                                                       true)),
                      parent());
 }
 
@@ -703,7 +705,7 @@ void PointerTool::FinishDrag(TimelineViewMouseEvent *event)
         block = new_block;
 
         if (ClipBlock *new_clip = dynamic_cast<ClipBlock*>(block)) {
-          new_clip->waveform() = static_cast<ClipBlock*>(p.block)->waveform();
+          new_clip->AddCachePassthroughFrom(static_cast<ClipBlock*>(p.block));
         }
       }
 
@@ -945,7 +947,7 @@ rational PointerTool::ValidateInTrimming(rational movement)
 
     // Clamp adjusted value between the earliest and latest values
     rational adjusted = ghost->GetIn() + movement;
-    rational clamped = clamp(adjusted, earliest_in, latest_in);
+    rational clamped = std::clamp(adjusted, earliest_in, latest_in);
 
     if (clamped != adjusted) {
       movement = clamped - ghost->GetIn();
@@ -982,7 +984,7 @@ rational PointerTool::ValidateOutTrimming(rational movement)
 
     // Clamp adjusted value between the earliest and latest values
     rational adjusted = ghost->GetOut() + movement;
-    rational clamped = clamp(adjusted, earliest_out, latest_out);
+    rational clamped = std::clamp(adjusted, earliest_out, latest_out);
 
     if (clamped != adjusted) {
       movement = clamped - ghost->GetOut();

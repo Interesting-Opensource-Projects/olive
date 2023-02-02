@@ -23,8 +23,8 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
 #include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
 }
@@ -41,11 +41,11 @@ public:
 
   virtual QStringList GetPixelFormatsForCodec(ExportCodec::Codec c) const override;
 
-  virtual std::vector<AudioParams::Format> GetSampleFormatsForCodec(ExportCodec::Codec c) const override;
+  virtual std::vector<SampleFormat> GetSampleFormatsForCodec(ExportCodec::Codec c) const override;
 
   virtual bool Open() override;
 
-  virtual bool WriteFrame(olive::FramePtr frame, olive::rational time) override;
+  virtual bool WriteFrame(olive::FramePtr frame, olive::core::rational time) override;
 
   virtual bool WriteAudio(const olive::SampleBuffer &audio) override;
 
@@ -55,7 +55,7 @@ public:
 
   virtual void Close() override;
 
-  virtual VideoParams::Format GetDesiredPixelFormat() const override
+  virtual PixelFormat GetDesiredPixelFormat() const override
   {
     return video_conversion_fmt_;
   }
@@ -82,15 +82,16 @@ private:
 
   bool InitializeResampleContext(const AudioParams &audio);
 
-  static const AVCodec *GetEncoder(ExportCodec::Codec c, AudioParams::Format aformat);
+  static const AVCodec *GetEncoder(ExportCodec::Codec c, SampleFormat aformat);
 
   AVFormatContext* fmt_ctx_;
 
   AVStream* video_stream_;
   AVCodecContext* video_codec_ctx_;
-  SwsContext* video_alpha_scale_ctx_;
-  SwsContext* video_noalpha_scale_ctx_;
-  VideoParams::Format video_conversion_fmt_;
+  AVFilterGraph *video_scale_ctx_;
+  AVFilterContext *video_buffersrc_ctx_;
+  AVFilterContext *video_buffersink_ctx_;
+  PixelFormat video_conversion_fmt_;
 
   AVStream* audio_stream_;
   AVCodecContext* audio_codec_ctx_;

@@ -63,7 +63,13 @@ public:
 
   virtual void Retranslate() override;
 
-  bool ChildExistsWithName(const QString& s) const;
+  Node *GetChildWithName(const QString& s) const;
+  bool ChildExistsWithName(const QString& s) const
+  {
+    return GetChildWithName(s);
+  }
+
+  bool HasChildRecursive(Node *child) const;
 
   int item_child_count() const
   {

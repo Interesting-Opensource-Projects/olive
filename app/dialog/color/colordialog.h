@@ -24,10 +24,10 @@
 #include <QDialog>
 
 #include "node/color/colormanager/colormanager.h"
-#include "render/color.h"
 #include "render/managedcolor.h"
 #include "widget/colorwheel/colorgradientwidget.h"
 #include "widget/colorwheel/colorspacechooser.h"
+#include "widget/colorwheel/colorswatchchooser.h"
 #include "widget/colorwheel/colorvalueswidget.h"
 #include "widget/colorwheel/colorwheelwidget.h"
 
@@ -69,6 +69,9 @@ public:
 
   ColorTransform GetColorSpaceOutput() const;
 
+public slots:
+  void SetColor(const ManagedColor &c);
+
 private:
   ColorManager* color_manager_;
 
@@ -81,6 +84,8 @@ private:
   ColorProcessorPtr input_to_ref_processor_;
 
   ColorSpaceChooser* chooser_;
+
+  ColorSwatchChooser *swatch_;
 
 private slots:
   void ColorSpaceChanged(const QString& input, const ColorTransform &output);

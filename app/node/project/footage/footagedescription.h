@@ -22,7 +22,6 @@
 #define FOOTAGEDESCRIPTION_H
 
 #include "node/output/track/track.h"
-#include "render/audioparams.h"
 #include "render/subtitleparams.h"
 #include "render/videoparams.h"
 
@@ -32,7 +31,8 @@ class FootageDescription
 {
 public:
   FootageDescription(const QString& decoder = QString()) :
-    decoder_(decoder)
+    decoder_(decoder),
+    total_stream_count_(0)
   {
   }
 
@@ -118,6 +118,9 @@ public:
     return StreamIsVideo(index) || StreamIsAudio(index) || StreamIsSubtitle(index);
   }
 
+  int GetStreamCount() const { return total_stream_count_; }
+  void SetStreamCount(int s) { total_stream_count_ = s; }
+
   bool Load(const QString& filename);
 
   bool Save(const QString& filename) const;
@@ -138,7 +141,7 @@ public:
   }
 
 private:
-  static constexpr unsigned kFootageMetaVersion = 2;
+  static constexpr unsigned kFootageMetaVersion = 5;
 
   QString decoder_;
 
@@ -147,6 +150,8 @@ private:
   QVector<AudioParams> audio_streams_;
 
   QVector<SubtitleParams> subtitle_streams_;
+
+  int total_stream_count_;
 
 };
 

@@ -28,6 +28,7 @@
 #include "core.h"
 #include "node/block/transition/transition.h"
 #include "node/output/viewer/viewer.h"
+#include "node/project/serializer/serializer.h"
 #include "timeline/timelinecommon.h"
 #include "timelineandtrackview.h"
 #include "widget/slider/rationalslider.h"
@@ -110,6 +111,8 @@ public:
   void DisableRecordingOverlay();
 
   void AddTentativeSubtitleTrack();
+
+  void NestSelectedClips();
 
   /**
    * @brief Timelines should always be connected to sequences
@@ -274,6 +277,8 @@ public:
 public slots:
   void ClearTentativeSubtitleTrack();
 
+  void RenameSelectedBlocks();
+
 signals:
   void BlockSelectionChanged(const QVector<Block*>& selected_blocks);
 
@@ -285,8 +290,8 @@ signals:
 protected:
   virtual void resizeEvent(QResizeEvent *event) override;
 
+  virtual void TimeChangedEvent(const rational &) override;
   virtual void TimebaseChangedEvent(const rational &) override;
-  virtual void TimeChangedEvent(const rational &time) override;
   virtual void ScaleChangedEvent(const double &) override;
 
   virtual void ConnectNodeEvent(ViewerOutput* n) override;
@@ -308,6 +313,8 @@ private:
   bool PasteInternal(bool insert);
 
   TimelineAndTrackView *AddTimelineAndTrackView(Qt::Alignment alignment);
+
+  QHash<Node*, Node*> GenerateExistingPasteMap(const ProjectSerializer::Result &r);
 
   QPoint drag_origin_;
 
@@ -410,13 +417,13 @@ private slots:
 
   void SetUseAudioTimeUnits(bool use);
 
-  void SetViewTime(const rational &time);
-
   void ToolChanged();
 
   void AddableObjectChanged();
 
   void SetViewWaveformsEnabled(bool e);
+
+  void SetViewThumbnailsEnabled(QAction *action);
 
   void FrameRateChanged();
 
@@ -424,16 +431,20 @@ private slots:
 
   void TrackIndexChanged(int old, int now);
 
-  void SetScrollZoomsByDefaultOnAllViews(bool e);
-
   void SignalBlockSelectionChange();
 
   void RevealInFootageViewer();
   void RevealInProject();
 
-  void RenameSelectedBlocks();
-
   void TrackAboutToBeDeleted(Track *track);
+
+  void SetSelectedClipsAutocaching(bool e);
+
+  void CacheClips();
+  void CacheClipsInOut();
+  void CacheDiscard();
+
+  void MulticamEnabledTriggered(bool e);
 
 };
 

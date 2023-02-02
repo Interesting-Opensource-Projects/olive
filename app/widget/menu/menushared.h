@@ -21,11 +21,13 @@
 #ifndef MENUSHARED_H
 #define MENUSHARED_H
 
-#include "common/rational.h"
+#include <olive/core/core.h>
 #include "widget/colorlabelmenu/colorlabelmenu.h"
 #include "widget/menu/menu.h"
 
 namespace olive {
+
+using namespace core;
 
 /**
  * @brief A static object that provides various "stock" menus for use throughout the application
@@ -72,6 +74,7 @@ private:
   QAction* edit_paste_item_;
   QAction* edit_paste_insert_item_;
   QAction* edit_duplicate_item_;
+  QAction* edit_rename_item_;
   QAction* edit_delete_item_;
   QAction* edit_ripple_delete_item_;
   QAction* edit_split_item_;
@@ -129,6 +132,8 @@ private slots:
   void PasteInsertTriggered();
 
   void DuplicateTriggered();
+
+  void RenameSelectedTriggered();
 
   void EnableDisableTriggered();
 

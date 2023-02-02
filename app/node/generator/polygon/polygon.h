@@ -23,7 +23,6 @@
 
 #include <QPainterPath>
 
-#include "common/bezier.h"
 #include "node/generator/shape/generatorwithmerge.h"
 #include "node/gizmo/line.h"
 #include "node/gizmo/path.h"
@@ -54,11 +53,13 @@ public:
 
   virtual void UpdateGizmoPositions(const NodeValueRow &row, const NodeGlobals &globals) override;
 
+  virtual ShaderCode GetShaderCode(const ShaderRequest &request) const override;
+
   static const QString kPointsInput;
   static const QString kColorInput;
 
 protected:
-  GenerateJob GetGenerateJob(const NodeValueRow &value) const;
+  ShaderJob GetGenerateJob(const NodeValueRow &value, const VideoParams &params) const;
 
 protected slots:
   virtual void GizmoDragMove(double x, double y, const Qt::KeyboardModifiers &modifiers) override;
@@ -66,7 +67,7 @@ protected slots:
 private:
   static void AddPointToPath(QPainterPath *path, const Bezier &before, const Bezier &after);
 
-  static QPainterPath GeneratePath(const QVector<NodeValue> &points);
+  static QPainterPath GeneratePath(const NodeValueArray &points, int size);
 
   template<typename T>
   void ValidateGizmoVectorSize(QVector<T*> &vec, int new_sz);

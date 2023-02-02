@@ -25,6 +25,7 @@
 #include <QXmlStreamWriter>
 
 #include "common/xmlutils.h"
+#include "node/project/serializer/typeserializer.h"
 
 namespace olive {
 
@@ -43,9 +44,11 @@ bool FootageDescription::Load(const QString &filename)
         // Default to first version of metadata (which wasn't versioned at all)
         unsigned version = 1;
 
-        XMLAttributeLoop((&reader), attr) {
-          if (attr.name() == QStringLiteral("version")) {
-            version = attr.value().toUInt();
+        {
+          XMLAttributeLoop((&reader), attr) {
+            if (attr.name() == QStringLiteral("version")) {
+              version = attr.value().toUInt();
+            }
           }
         }
 
@@ -58,14 +61,21 @@ bool FootageDescription::Load(const QString &filename)
           if (reader.name() == QStringLiteral("decoder")) {
             decoder_ = reader.readElementText();
           } else if (reader.name() == QStringLiteral("streams")) {
+            {
+              XMLAttributeLoop((&reader), attr) {
+                if (attr.name() == QStringLiteral("count")) {
+                  total_stream_count_ = attr.value().toInt();
+                }
+              }
+            }
+
             while (XMLReadNextStartElement(&reader)) {
               if (reader.name() == QStringLiteral("video")) {
                 VideoParams vp;
                 vp.Load(&reader);
                 AddVideoStream(vp);
               } else if (reader.name() == QStringLiteral("audio")) {
-                AudioParams ap;
-                ap.Load(&reader);
+                AudioParams ap = TypeSerializer::LoadAudioParams(&reader);
                 AddAudioStream(ap);
               } else if (reader.name() == QStringLiteral("subtitle")) {
                 SubtitleParams sp;
@@ -116,6 +126,8 @@ bool FootageDescription::Save(const QString &filename) const
 
   writer.writeStartElement(QStringLiteral("streams"));
 
+  writer.writeAttribute(QStringLiteral("count"), QString::number(total_stream_count_));
+
   foreach (const VideoParams& vp, video_streams_) {
     writer.writeStartElement(QStringLiteral("video"));
     vp.Save(&writer);
@@ -124,7 +136,7 @@ bool FootageDescription::Save(const QString &filename) const
 
   foreach (const AudioParams& ap, audio_streams_) {
     writer.writeStartElement(QStringLiteral("audio"));
-    ap.Save(&writer);
+    TypeSerializer::SaveAudioParams(&writer, ap);
     writer.writeEndElement(); // audio
   }
 

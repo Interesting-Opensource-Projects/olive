@@ -24,7 +24,6 @@
 #include <QtMath>
 
 #include "audio/audiovisualwaveform.h"
-#include "common/clamp.h"
 
 namespace olive {
 
@@ -64,6 +63,9 @@ rational TimeScaledObject::SceneToTime(const double &x, const double &x_scale, c
 
   if (round) {
     rounded_x_mvmt = qRound64(unscaled_time);
+  } else if (unscaled_time < 0) {
+    // "floor" to zero
+    rounded_x_mvmt = qCeil(unscaled_time);
   } else {
     rounded_x_mvmt = qFloor(unscaled_time);
   }
@@ -121,7 +123,7 @@ void TimeScaledObject::SetScale(const double& scale)
 {
   Q_ASSERT(scale > 0);
 
-  scale_ = clamp(scale, min_scale_, max_scale_);
+  scale_ = std::clamp(scale, min_scale_, max_scale_);
 
   ScaleChangedEvent(scale_);
 }

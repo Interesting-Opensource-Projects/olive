@@ -86,6 +86,8 @@ public:
 
   virtual void MoveOutToPlayhead() override;
 
+  virtual void RenameSelected() override;
+
   void AddDefaultTransitionsToSelected()
   {
     timeline_widget()->AddDefaultTransitionsToSelected();
@@ -96,6 +98,11 @@ public:
     timeline_widget()->ShowSpeedDurationDialogForSelectedClips();
   }
 
+  void NestSelectedClips()
+  {
+    timeline_widget()->NestSelectedClips();
+  }
+
   void InsertFootageAtPlayhead(const QVector<ViewerOutput *> &footage);
 
   void OverwriteFootageAtPlayhead(const QVector<ViewerOutput *> &footage);
@@ -103,6 +110,11 @@ public:
   const QVector<Block*>& GetSelectedBlocks() const
   {
     return timeline_widget()->GetSelectedBlocks();
+  }
+
+  Sequence *GetSequence() const
+  {
+    return dynamic_cast<Sequence*>(GetConnectedViewer());
   }
 
 protected:

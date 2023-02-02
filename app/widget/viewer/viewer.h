@@ -30,7 +30,6 @@
 
 #include "audio/audioprocessor.h"
 #include "audiowaveformview.h"
-#include "common/rational.h"
 #include "node/output/viewer/viewer.h"
 #include "render/previewaudiodevice.h"
 #include "render/previewautocacher.h"
@@ -42,6 +41,8 @@
 #include "widget/timelinewidget/timelinewidget.h"
 
 namespace olive {
+
+class MulticamWidget;
 
 /**
  * @brief An OpenGL-based viewer widget with playback controls (a PlaybackControls widget).
@@ -57,7 +58,9 @@ public:
     kWFViewerAndWaveform
   };
 
-  ViewerWidget(QWidget* parent = nullptr);
+  ViewerWidget(QWidget* parent = nullptr) :
+    ViewerWidget(new ViewerDisplayWidget(), parent)
+  {}
 
   virtual ~ViewerWidget() override;
 
@@ -99,6 +102,37 @@ public:
   {
     enable_audio_scrubbing_ = e;
   }
+
+  PreviewAutoCacher *GetCacher() const { return auto_cacher_; }
+
+  void AddPlaybackDevice(ViewerDisplayWidget *vw)
+  {
+    playback_devices_.push_back(vw);
+  }
+
+  void SetTimelineSelectedBlocks(const QVector<Block*> &b)
+  {
+    timeline_selected_blocks_ = b;
+
+    if (!IsPlaying()) {
+      // If is playing, this will happen by the next frame automatically
+      DetectMulticamNodeNow();
+      UpdateTextureFromNode();
+    }
+  }
+
+  void SetNodeViewSelections(const QVector<Node*> &n)
+  {
+    node_view_selected_ = n;
+
+    if (!IsPlaying()) {
+      // If is playing, this will happen by the next frame automatically
+      DetectMulticamNodeNow();
+      UpdateTextureFromNode();
+    }
+  }
+
+  void ConnectMulticamWidget(MulticamWidget *p);
 
 public slots:
   void Play(bool in_to_out_only);
@@ -157,6 +191,8 @@ signals:
   void ColorManagerChanged(ColorManager* color_manager);
 
 protected:
+  ViewerWidget(ViewerDisplayWidget *display, QWidget* parent = nullptr);
+
   virtual void TimebaseChangedEvent(const rational &) override;
   virtual void TimeChangedEvent(const rational &time) override;
 
@@ -177,10 +213,22 @@ protected:
     return display_widget_;
   }
 
+  void IgnoreNextScrubEvent()
+  {
+    ignore_scrub_++;
+  }
+
+  virtual RenderTicketPtr GetSingleFrame(const rational &t, bool dry = false)
+  {
+    return auto_cacher_->GetSingleFrame(t, dry);
+  }
+
+  PreviewAutoCacher *auto_cacher() const { return auto_cacher_; }
+
 private:
   int64_t GetTimestamp() const
   {
-    return Timecode::time_to_timestamp(GetTime(), timebase(), Timecode::kFloor);
+    return Timecode::time_to_timestamp(GetConnectedNode()->GetPlayhead(), timebase(), Timecode::kFloor);
   }
 
   void UpdateTimeInternal(int64_t i);
@@ -201,7 +249,7 @@ private:
 
   bool ViewerMightBeAStill();
 
-  void SetDisplayImage(QVariant frame);
+  void SetDisplayImage(RenderTicketPtr ticket);
 
   RenderTicketWatcher *RequestNextFrameForQueue(bool increment = true);
 
@@ -221,8 +269,6 @@ private:
 
   void UpdateAutoCacher();
 
-  void ClearVideoAutoCacherQueue();
-
   void DecrementPrequeuedAudio();
 
   void ArmForRecording();
@@ -232,6 +278,10 @@ private:
   void CloseAudioProcessor();
 
   void SetWaveformMode(WaveformMode wf);
+
+  void DetectMulticamNode(const rational &time);
+
+  bool IsVideoVisible() const;
 
   ViewerSizer* sizer_;
 
@@ -256,6 +306,7 @@ private:
   QTimer playback_backup_timer_;
 
   int64_t playback_queue_next_frame_;
+  int64_t dry_run_next_frame_;
   QVector<ViewerDisplayWidget*> playback_devices_;
 
   bool prequeuing_video_;
@@ -268,7 +319,7 @@ private:
   int prequeue_length_;
   int prequeue_count_;
 
-  PreviewAutoCacher auto_cacher_;
+  PreviewAutoCacher *auto_cacher_;
 
   QVector<RenderTicketWatcher*> queue_watchers_;
 
@@ -279,6 +330,8 @@ private:
   static const rational kAudioPlaybackInterval;
 
   static QVector<ViewerWidget*> instances_;
+
+  std::list<RenderTicketWatcher*> audio_scrub_watchers_;
 
   bool record_armed_;
   bool recording_;
@@ -293,6 +346,15 @@ private:
   bool enable_audio_scrubbing_;
 
   WaveformMode waveform_mode_;
+
+  QVector<RenderTicketWatcher*> dry_run_watchers_;
+
+  int ignore_scrub_;
+
+  QVector<Block*> timeline_selected_blocks_;
+  QVector<Node*> node_view_selected_;
+
+  MulticamWidget *multicam_panel_;
 
 private slots:
   void PlaybackTimerUpdate();
@@ -351,6 +413,16 @@ private slots:
   void CreateAddableAt(const QRectF &f);
 
   void HandleFirstRequeueDestroy();
+
+  void ShowSubtitleProperties();
+
+  void DryRunFinished();
+
+  void RequestNextDryRun();
+
+  void SaveFrameAsImage();
+
+  void DetectMulticamNodeNow();
 
 };
 

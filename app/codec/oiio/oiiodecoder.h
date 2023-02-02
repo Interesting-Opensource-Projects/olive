@@ -40,11 +40,11 @@ public:
 
   virtual bool SupportsVideo() override{return true;}
 
-  virtual FootageDescription Probe(const QString& filename, const QAtomicInt* cancelled) const override;
+  virtual FootageDescription Probe(const QString& filename, CancelAtom *cancelled) const override;
 
 protected:
   virtual bool OpenInternal() override;
-  virtual TexturePtr RetrieveVideoInternal(Renderer *renderer, const rational& timecode, const RetrieveVideoParams& params, const QAtomicInt *cancelled) override;
+  virtual TexturePtr RetrieveVideoInternal(const RetrieveVideoParams& p) override;
   virtual void CloseInternal() override;
 
 private:
@@ -58,7 +58,7 @@ private:
 
   static VideoParams GetVideoParamsFromImageSpec(const OIIO::ImageSpec &spec);
 
-  VideoParams::Format pix_fmt_;
+  PixelFormat pix_fmt_;
   OIIO::TypeDesc::BASETYPE oiio_pix_fmt_;
 
   Frame buffer_;

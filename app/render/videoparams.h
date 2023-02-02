@@ -21,40 +21,17 @@
 #ifndef VIDEOPARAMS_H
 #define VIDEOPARAMS_H
 
+#include <olive/core/core.h>
 #include <QVector2D>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
 
-#include "common/rational.h"
-#include "rendermodes.h"
-
 namespace olive {
+
+using namespace core;
 
 class VideoParams {
 public:
-  enum Format {
-    /// Invalid or no format
-    kFormatInvalid = -1,
-
-    /// 8-bit unsigned integer
-    kFormatUnsigned8,
-
-    /// 16-bit unsigned integer
-    kFormatUnsigned16,
-
-    /// 16-bit half float
-    kFormatFloat16,
-
-    /// 32-bit full float
-    kFormatFloat32,
-
-    /// 64-bit double float - disabled since very, very few libs support 64-bit buffers
-    //kFormatFloat64,
-
-    /// Total format count
-    kFormatCount
-  };
-
   enum Interlacing {
     kInterlaceNone,
     kInterlacedTopFirst,
@@ -66,17 +43,25 @@ public:
     kVideoTypeStill,
     kVideoTypeImageSequence
   };
+  enum ColorRange
+  {
+    kColorRangeLimited,   // 16_235
+    kColorRangeFull,      // 0-255
+
+    kColorRangeDefault = kColorRangeLimited
+  };
+
 
   VideoParams();
-  VideoParams(int width, int height, Format format, int nb_channels,
+  VideoParams(int width, int height, PixelFormat format, int nb_channels,
               const rational& pixel_aspect_ratio = 1,
               Interlacing interlacing = kInterlaceNone, int divider = 1);
   VideoParams(int width, int height, int depth,
-              Format format, int nb_channels,
+              PixelFormat format, int nb_channels,
               const rational& pixel_aspect_ratio = 1,
               Interlacing interlacing = kInterlaceNone, int divider = 1);
   VideoParams(int width, int height, const rational& time_base,
-              Format format, int nb_channels,
+              PixelFormat format, int nb_channels,
               const rational& pixel_aspect_ratio = 1,
               Interlacing interlacing = kInterlaceNone, int divider = 1);
 
@@ -97,6 +82,16 @@ public:
   int square_pixel_width() const
   {
     return par_width_;
+  }
+
+  QVector2D resolution() const
+  {
+    return QVector2D(width_, height_);
+  }
+
+  QVector2D square_resolution() const
+  {
+    return QVector2D(par_width_, height_);
   }
 
   int height() const
@@ -120,6 +115,8 @@ public:
     depth_ = depth;
     calculate_effective_size();
   }
+
+  bool is_3d() const { return depth_ > 1; }
 
   const rational& time_base() const
   {
@@ -162,12 +159,12 @@ public:
     return effective_depth_;
   }
 
-  Format format() const
+  PixelFormat format() const
   {
     return format_;
   }
 
-  void set_format(Format f)
+  void set_format(PixelFormat f)
   {
     format_ = f;
   }
@@ -210,19 +207,19 @@ public:
   bool operator==(const VideoParams& rhs) const;
   bool operator!=(const VideoParams& rhs) const;
 
-  static int GetBytesPerChannel(Format format);
+  static int GetBytesPerChannel(PixelFormat format);
   int GetBytesPerChannel() const
   {
     return GetBytesPerChannel(format_);
   }
 
-  static int GetBytesPerPixel(Format format, int channels);
+  static int GetBytesPerPixel(PixelFormat format, int channels);
   int GetBytesPerPixel() const
   {
     return GetBytesPerPixel(format_, channel_count_);
   }
 
-  static int GetBufferSize(int width, int height, Format format, int channels)
+  static int GetBufferSize(int width, int height, PixelFormat format, int channels)
   {
     return width * height * GetBytesPerPixel(format, channels);
   }
@@ -233,9 +230,14 @@ public:
 
   static QString GetNameForDivider(int div);
 
-  static bool FormatIsFloat(Format format);
+  static bool FormatIsFloat(PixelFormat format)
+  {
+    return format.is_float();
+  }
 
-  static QString GetFormatName(Format format);
+  static QString GetFormatName(PixelFormat format);
+
+  static int GetDividerForTargetResolution(int src_width, int src_height, int dst_width, int dst_height);
 
   static const int kInternalChannelCount;
 
@@ -350,6 +352,9 @@ public:
     colorspace_ = c;
   }
 
+  const ColorRange &color_range() const { return color_range_; }
+  void set_color_range(const ColorRange &color_range) { color_range_ = color_range; }
+
   int64_t get_time_in_timebase_units(const rational& time) const;
 
   void Load(QXmlStreamReader* reader);
@@ -370,7 +375,7 @@ private:
   int depth_;
   rational time_base_;
 
-  Format format_;
+  PixelFormat format_;
 
   int channel_count_;
 
@@ -396,6 +401,7 @@ private:
   QString colorspace_;
   float x_;
   float y_;
+  ColorRange color_range_;
 
 };
 

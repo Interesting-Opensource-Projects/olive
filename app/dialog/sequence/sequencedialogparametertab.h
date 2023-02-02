@@ -59,14 +59,16 @@ public:
     return preview_resolution_field_->GetDivider();
   }
 
-  VideoParams::Format GetSelectedPreviewFormat() const
+  PixelFormat GetSelectedPreviewFormat() const
   {
     return preview_format_field_->GetPixelFormat();
   }
 
   bool GetSelectedPreviewAutoCache() const
   {
-    return preview_autocache_field_->isChecked();
+    //return preview_autocache_field_->isChecked();
+    // TEMP: Disable sequence auto-cache, wanna see if clip cache supersedes it.
+    return false;
   }
 
 public slots:

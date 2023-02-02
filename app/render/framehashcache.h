@@ -21,9 +21,6 @@
 #ifndef VIDEORENDERFRAMECACHE_H
 #define VIDEORENDERFRAMECACHE_H
 
-#include "common/rational.h"
-#include "common/timecodefunctions.h"
-#include "common/timerange.h"
 #include "codec/frame.h"
 #include "render/playbackcache.h"
 #include "render/videoparams.h"
@@ -48,14 +45,7 @@ public:
     return GetValidatedRanges().contains(time);
   }
 
-  QString GetValidCacheFilename(const rational &time) const
-  {
-    if (IsFrameCached(time)) {
-      return CachePathName(time);
-    } else {
-      return QString();
-    }
-  }
+  QString GetValidCacheFilename(const rational &time) const;
 
   static bool SaveCacheFrame(const QString& filename, FramePtr frame);
   bool SaveCacheFrame(const int64_t &time, FramePtr frame) const;
@@ -64,6 +54,12 @@ public:
   static FramePtr LoadCacheFrame(const QString& cache_path, const QUuid &uuid, const int64_t &time);
   FramePtr LoadCacheFrame(const int64_t &time) const;
   static FramePtr LoadCacheFrame(const QString& fn);
+
+  virtual void SetPassthrough(PlaybackCache *cache) override;
+
+protected:
+  virtual void LoadStateEvent(QDataStream &stream) override;
+  virtual void SaveStateEvent(QDataStream &stream) override;
 
 private:
   rational ToTime(const int64_t &ts) const;
@@ -80,13 +76,22 @@ private:
 
   rational timebase_;
 
-  static const QString kCacheFormatExtension;
-
 private slots:
   void HashDeleted(const QString &path, const QString &filename);
 
   void ProjectInvalidated(Project* p);
 
+};
+
+class ThumbnailCache : public FrameHashCache
+{
+  Q_OBJECT
+public:
+  ThumbnailCache(QObject* parent = nullptr) :
+    FrameHashCache(parent)
+  {
+    SetTimebase(rational(1, 10));
+  }
 };
 
 }

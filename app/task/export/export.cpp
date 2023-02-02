@@ -20,18 +20,21 @@
 
 #include "export.h"
 
-#include "common/timecodefunctions.h"
 #include "node/color/colormanager/colormanager.h"
 
 namespace olive {
 
 ExportTask::ExportTask(ViewerOutput *viewer_node,
                        ColorManager* color_manager,
-                       const ExportParams& params) :
-  color_manager_(color_manager),
+                       const EncodingParams& params) :
   params_(params)
 {
-  set_viewer(viewer_node);
+  // Create a copy of the project
+  copier_ = new ProjectCopier(this);
+  copier_->SetProject(viewer_node->project());
+
+  set_viewer(copier_->GetCopy(viewer_node));
+  color_manager_ = copier_->GetCopy(color_manager);
 
   // Adjust video params to have no divider
   VideoParams vp = viewer_node->GetVideoParams();
@@ -48,8 +51,6 @@ ExportTask::ExportTask(ViewerOutput *viewer_node,
 
 bool ExportTask::Run()
 {
-  TimeRange range;
-
   // For safety, if we're overwriting, we save to a temporary filename and then only overwrite it
   // at the end
   QString real_filename = params_.filename();
@@ -58,7 +59,14 @@ bool ExportTask::Run()
     params_.SetFilename(FileFunctions::GetSafeTemporaryFilename(real_filename));
   }
 
-  encoder_ = Encoder::CreateFromID(params_.encoder(), params_);
+  // If we're exporting to a sidecar subtitle file, disable the subtitles in the main encoder
+  bool subtitles_enabled = params_.subtitles_enabled();
+  EncodingParams sidecar_params = params_;
+  if (subtitles_enabled && params_.subtitles_are_sidecar()) {
+    params_.DisableSubtitles();
+  }
+
+  encoder_ = std::shared_ptr<Encoder>(Encoder::CreateFromParams(params_));
 
   if (!encoder_) {
     SetError(tr("Failed to create encoder"));
@@ -67,16 +75,44 @@ bool ExportTask::Run()
 
   if (!encoder_->Open()) {
     SetError(tr("Failed to open file: %1").arg(encoder_->GetError()));
-    encoder_->deleteLater();
     return false;
+  }
+
+  if (subtitles_enabled && params_.subtitles_are_sidecar()) {
+    // Construct sidecar params
+    sidecar_params.DisableVideo();
+    sidecar_params.DisableAudio();
+
+    QString sidecar_filename;
+    {
+      QFileInfo fi(real_filename);
+      sidecar_filename = fi.completeBaseName();
+      sidecar_filename.append('.');
+      sidecar_filename.append(ExportFormat::GetExtension(sidecar_params.subtitle_sidecar_fmt()));
+      sidecar_filename = fi.dir().filePath(sidecar_filename);
+    }
+    sidecar_params.SetFilename(sidecar_filename);
+
+    subtitle_encoder_ = std::shared_ptr<Encoder>(Encoder::CreateFromFormat(sidecar_params.subtitle_sidecar_fmt(), sidecar_params));
+    if (!subtitle_encoder_) {
+      SetError(tr("Failed to create subtitle encoder"));
+      return false;
+    }
+
+    if (!subtitle_encoder_->Open()) {
+      SetError(tr("Failed to open subtitle sidecar file: %1").arg(sidecar_filename));
+      return false;
+    }
+  } else {
+    subtitle_encoder_ = encoder_;
   }
 
   if (params_.has_custom_range()) {
     // Render custom range only
-    range = params_.custom_range();
+    export_range_ = params_.custom_range();
   } else {
     // Render entire sequence
-    range = TimeRange(0, viewer()->GetLength());
+    export_range_ = TimeRange(0, viewer()->GetLength());
   }
 
   frame_time_ = 0;
@@ -91,12 +127,12 @@ bool ExportTask::Run()
         || video_params().height() != params_.video_params().height()) {
       video_force_size = QSize(params_.video_params().width(), params_.video_params().height());
 
-      if (params_.video_scaling_method() != ExportParams::kStretch) {
-        video_force_matrix = ExportParams::GenerateMatrix(params_.video_scaling_method(),
-                                                          video_params().width(),
-                                                          video_params().height(),
-                                                          params_.video_params().width(),
-                                                          params_.video_params().height());
+      if (params_.video_scaling_method() != EncodingParams::kStretch) {
+        video_force_matrix = EncodingParams::GenerateMatrix(params_.video_scaling_method(),
+                                                            video_params().width(),
+                                                            video_params().height(),
+                                                            params_.video_params().width(),
+                                                            params_.video_params().height());
       }
     } else {
       // Disables forcing size in the renderer
@@ -114,31 +150,40 @@ bool ExportTask::Run()
   TimeRange subtitle_range;
 
   if (params_.video_enabled()) {
-    video_range = {range};
+    if (export_range_.in() > 0) {
+      export_range_.set_in(Timecode::snap_time_to_timebase(export_range_.in(), video_params().frame_rate_as_time_base()));
+    }
+
+    video_range = {export_range_};
   }
 
   if (params_.audio_enabled()) {
-    audio_range = {range};
+    audio_range = {export_range_};
   }
 
-  if (params_.subtitles_enabled()) {
-    subtitle_range = range;
+  if (subtitles_enabled) {
+    subtitle_range = export_range_;
   }
 
   Render(color_manager_, video_range, audio_range, subtitle_range, RenderMode::kOnline, nullptr,
          video_force_size, video_force_matrix, encoder_->GetDesiredPixelFormat(),
-         color_processor_);
+         VideoParams::kRGBAChannelCount, color_processor_);
 
   bool success = true;
 
   encoder_->Close();
-
   if (!encoder_->GetError().isEmpty()) {
     SetError(encoder_->GetError());
     success = false;
   }
 
-  delete encoder_;
+  if (subtitle_encoder_ != encoder_) {
+    subtitle_encoder_->Close();
+    if (!subtitle_encoder_->GetError().isEmpty()) {
+      SetError(subtitle_encoder_->GetError());
+      success = false;
+    }
+  }
 
   // If cancelled, delete the file we made, which is always a file we created since we write to a
   // temp file during the actual encoding process
@@ -158,11 +203,7 @@ bool ExportTask::Run()
 
 bool ExportTask::FrameDownloaded(FramePtr f, const rational &time)
 {
-  rational actual_time = time;
-
-  if (params_.has_custom_range()) {
-    actual_time -= params_.custom_range().in();
-  }
+  rational actual_time = time - export_range_.in();
 
   time_map_.insert(actual_time, f);
 
@@ -190,11 +231,7 @@ bool ExportTask::FrameDownloaded(FramePtr f, const rational &time)
 
 bool ExportTask::AudioDownloaded(const TimeRange &range, const SampleBuffer &samples)
 {
-  TimeRange adjusted_range = range;
-
-  if (params_.has_custom_range()) {
-    adjusted_range -= params_.custom_range().in();
-  }
+  TimeRange adjusted_range = range - export_range_.in();
 
   if (adjusted_range.in() == audio_time_) {
     if (!WriteAudioLoop(adjusted_range, samples)) {
@@ -209,8 +246,8 @@ bool ExportTask::AudioDownloaded(const TimeRange &range, const SampleBuffer &sam
 
 bool ExportTask::EncodeSubtitle(const SubtitleBlock *sub)
 {
-  if (!encoder_->WriteSubtitle(sub)) {
-    SetError(encoder_->GetError());
+  if (!subtitle_encoder_->WriteSubtitle(sub)) {
+    SetError(subtitle_encoder_->GetError());
     return false;
   } else {
     return true;
